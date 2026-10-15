@@ -57,11 +57,12 @@
   "options": {
     "step": {
       "init": {
-        "title": "Cloud server and diagnostics",
-        "description": "Choose the server that contains your HomeMate devices. For international accounts try homemate.orvibo.com. If devices are missing, change the server and select the devices again. Capture unsolicited cloud packets in the Home Assistant log. Credentials and identifiers are redacted. Enable this only while diagnosing a device, then disable it.",
+        "title": "Cloud server, TV profile and diagnostics",
+        "description": "Choose the server that contains your HomeMate devices. International accounts can try homemate.orvibo.com first. Select LG TV (standard infrared) for an LG TV; the legacy profile sends older stored HomeMate keys. Raw event capture logs unsolicited cloud packets with credentials and identifiers redacted. Enable capture only while diagnosing a device, then disable it.",
         "data": {
           "raw_event_capture": "Enable redacted raw event capture",
-          "host": "Cloud server"
+          "host": "Cloud server",
+          "tv_profile": "TV infrared profile"
         }
       },
       "devices": {
@@ -86,7 +87,8 @@
       "no_devices_selected": "Select at least one device.",
       "invalid_host": "Choose one of the listed ORVIBO servers.",
       "family_not_found": "The current home was not found on that server; the existing configuration was kept.",
-      "no_devices": "No devices were returned by that server; the existing configuration was kept."
+      "no_devices": "No devices were returned by that server; the existing configuration was kept.",
+      "invalid_tv_profile": "Choose one of the listed TV infrared profiles."
     },
     "abort": {
       "unknown": "The options flow lost its device state."

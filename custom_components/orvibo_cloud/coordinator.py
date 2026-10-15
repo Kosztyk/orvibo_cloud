@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -49,6 +50,7 @@ class OrviboCloudCoordinator(DataUpdateCoordinator[OrviboAccount]):
         self.device_discovery_error: str | None = None
         self.privacy_device_discovery_error: str | None = None
         self.raw_event_capture: OrviboRawEventCapture | None = None
+        self.tv_control_lock = asyncio.Lock()
 
     async def _async_update_data(self) -> OrviboAccount:
         try:

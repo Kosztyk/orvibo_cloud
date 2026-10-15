@@ -18,6 +18,14 @@ _PROPERTY_LIGHT_MODELS = {
 
 
 @dataclass(frozen=True, slots=True)
+class OrviboInfrared:
+    """Carrier frequency in Hz and alternating mark/space times in microseconds."""
+
+    frequency: int
+    pulses: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OrviboControlCommand:
     """Values carried by an ORVIBO cmd=15 device command."""
 
@@ -27,6 +35,119 @@ class OrviboControlCommand:
     value3: int = 0
     value4: int = 0
     properties: Mapping[str, Any] | None = None
+    infrared: OrviboInfrared | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OrviboTVCommand:
+    """One stored TV key from HomeMate's activity_tv_controller layout."""
+
+    key: str
+    name: str
+    order: str | None
+    icon: str
+
+
+TV_COMMANDS = (
+    OrviboTVCommand("power_toggle", "Power toggle", "310110", "mdi:power"),
+    OrviboTVCommand("mute", "Mute", "310112", "mdi:volume-mute"),
+    OrviboTVCommand("volume_up", "Volume up", "310113", "mdi:volume-plus"),
+    OrviboTVCommand("volume_down", "Volume down", "310114", "mdi:volume-minus"),
+    OrviboTVCommand("channel_up", "Channel up", "310115", "mdi:chevron-up"),
+    OrviboTVCommand("channel_down", "Channel down", "310116", "mdi:chevron-down"),
+    OrviboTVCommand("menu", "Menu", "310118", "mdi:menu"),
+    OrviboTVCommand("input", "Input", "310126", "mdi:video-input-hdmi"),
+    OrviboTVCommand("up", "Up", "310120", "mdi:arrow-up"),
+    OrviboTVCommand("down", "Down", "310121", "mdi:arrow-down"),
+    OrviboTVCommand("left", "Left", "310122", "mdi:arrow-left"),
+    OrviboTVCommand("right", "Right", "310123", "mdi:arrow-right"),
+    OrviboTVCommand("ok", "OK", "310124", "mdi:checkbox-marked-circle-outline"),
+    *(
+        OrviboTVCommand(str(number), f"Number {number}", f"31010{number}",
+                        f"mdi:numeric-{number}-box-outline")
+        for number in range(10)
+    ),
+    OrviboTVCommand("home", "Home", None, "mdi:home"),
+    OrviboTVCommand("back", "Back", None, "mdi:arrow-u-left-top"),
+    OrviboTVCommand("exit", "Exit", None, "mdi:exit-to-app"),
+)
+_TV_BY_KEY = {command.key: command for command in TV_COMMANDS}
+_TV_BY_ORDER = {command.order: command for command in TV_COMMANDS if command.order}
+_LG_NEC_CODES = {
+    "power_toggle": 0x20DF10EF, "mute": 0x20DF906F,
+    "volume_up": 0x20DF40BF, "volume_down": 0x20DFC03F,
+    "channel_up": 0x20DF00FF, "channel_down": 0x20DF807F,
+    "menu": 0x20DFC23D, "input": 0x20DFD02F,
+    "up": 0x20DF02FD, "down": 0x20DF827D,
+    "left": 0x20DFE01F, "right": 0x20DF609F, "ok": 0x20DF22DD,
+    "home": 0x20DF3EC1, "back": 0x20DF14EB, "exit": 0x20DFDA25,
+    "0": 0x20DF08F7, "1": 0x20DF8877, "2": 0x20DF48B7,
+    "3": 0x20DFC837, "4": 0x20DF28D7, "5": 0x20DFA857,
+    "6": 0x20DF6897, "7": 0x20DFE817, "8": 0x20DF18E7,
+    "9": 0x20DF9867,
+}
+
+
+def is_allone_tv(device: OrviboDevice, devices: Iterable[OrviboDevice]) -> bool:
+    """Identify a type-6 TV sharing an Allone Pro's hardware UID."""
+
+    return device.device_type == "6" and bool(device.cloud_uid) and any(
+        hub.device_type == "67" and hub.cloud_uid == device.cloud_uid
+        for hub in devices
+    )
+
+
+def is_tv_button_order(order: str) -> bool:
+    """Recognize only TV button orders recovered from the app."""
+
+    return order in _TV_BY_ORDER
+
+
+def tv_button_command(action: str) -> OrviboControlCommand:
+    """Build a stored TV key command, with its code in order, not value1.
+
+    IrButton.onClick calls control.a.irControl with the layout's command
+    string. That overload leaves value1 through value4 at zero.
+    """
+
+    if not isinstance(action, str):
+        raise ValueError("A TV command must be a command name or known button code")
+    description = _TV_BY_KEY.get(action) or _TV_BY_ORDER.get(action)
+    if description is None or description.order is None:
+        raise ValueError(f"Unsupported TV command: {action}")
+    return OrviboControlCommand(description.order, 0)
+
+
+def tv_commands_for_profile(profile: str) -> tuple[OrviboTVCommand, ...]:
+    """Return only keys supported by the explicitly selected TV profile."""
+
+    if profile == "lg":
+        return TV_COMMANDS
+    if profile == "stored":
+        return tuple(command for command in TV_COMMANDS if command.order)
+    return ()
+
+
+def lg_tv_button_command(action: str) -> OrviboControlCommand:
+    """Encode a standard LG TV NEC key for the app's raw infrared path.
+
+    The app sends IrData.fre and comma-separated microsecond pulse times
+    through alloneControl, core.c.q0, and cmd=15 order='ir control'.
+    LG signals are independently captured TV codes; they are not the older
+    HomeMate 310xxx stored-key identifiers.
+    """
+
+    description = _TV_BY_KEY.get(action) or _TV_BY_ORDER.get(action)
+    if description is None or description.key not in _LG_NEC_CODES:
+        raise ValueError(f"Unsupported LG TV command: {action}")
+    signal = _LG_NEC_CODES[description.key]
+    pulses = [8960, 4480]
+    for shift in range(31, -1, -1):
+        pulses.extend((560, 1680 if signal & (1 << shift) else 560))
+    pulses.append(560)
+    return OrviboControlCommand(
+        "ir control", 0, infrared=OrviboInfrared(38000, tuple(pulses))
+    )
 
 
 def curtain_position_command(ha_position: int) -> OrviboControlCommand:
