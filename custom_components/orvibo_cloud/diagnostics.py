@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_PASSWORD_HASH, CONF_USER_ID, DOMAIN
-from .control import is_rf_curtain
+from .control import is_allone_tv, is_rf_curtain, tv_commands_for_profile
 from .coordinator import OrviboCloudCoordinator
 from .selection import device_is_selected
 
@@ -53,7 +53,18 @@ async def async_get_config_entry_diagnostics(
                 "has_control_uid": bool(device.cloud_uid),
                 "control_profile": (
                     "allone_rf" if is_rf_curtain(device, coordinator.data.devices)
+                    else "allone_tv" if is_allone_tv(device, coordinator.data.devices)
                     else "position" if device.device_type == "34" else None
+                ),
+                "tv_commands": (
+                    [command.key for command in tv_commands_for_profile(
+                        entry.options.get("tv_profile", "lg")
+                    )]
+                    if is_allone_tv(device, coordinator.data.devices) else []
+                ),
+                "tv_profile": (
+                    entry.options.get("tv_profile", "lg")
+                    if is_allone_tv(device, coordinator.data.devices) else None
                 ),
                 "selected": device_is_selected(entry.options, device.uid),
             }

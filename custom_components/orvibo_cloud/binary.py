@@ -19,6 +19,7 @@ import zlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
+from .control import OrviboInfrared, is_tv_button_order
 from .protocol import OrviboDevice, extract_devices
 
 _LOGGER = logging.getLogger(__name__)
@@ -213,6 +214,7 @@ class OrviboBinaryClient:
         value3: int = 0,
         value4: int = 0,
         properties: Mapping[str, Any] | None = None,
+        infrared: OrviboInfrared | None = None,
     ) -> tuple[int | None, int | None, int | None, int | None]:
         """Open a binary session and send one device control command."""
 
@@ -225,7 +227,7 @@ class OrviboBinaryClient:
             # Generate the request after login so its serial follows the
             # handshake/login serials on this connection.
             request = self._control_payload(
-                device_id, device_uid, order, value1, value2, value3, value4, properties
+                device_id, device_uid, order, value1, value2, value3, value4, properties, infrared
             )
             self._send(request)
             packets: list[dict[str, Any]] = []
@@ -250,9 +252,9 @@ class OrviboBinaryClient:
         )
         if rejected is not None or not replies:
             summary = [_control_reply_summary(packet, request) for packet in packets[:30]]
-            safe_order = order if order in {
+            safe_order = order if is_tv_button_order(order) or order in {
                 "open", "close", "stop", "on", "off", "set property",
-                "fast move to level", "fast color temperature", "rf control",
+                "fast move to level", "fast color temperature", "rf control", "ir control",
             } else "withheld"
             _LOGGER.warning(
                 "ORVIBO control reply diagnostics: order=%s packets=%s",
@@ -579,6 +581,7 @@ class OrviboBinaryClient:
         value3: int = 0,
         value4: int = 0,
         properties: Mapping[str, Any] | None = None,
+        infrared: OrviboInfrared | None = None,
     ) -> dict[str, Any]:
         """Build the cmd=15 payload used by the current app for device control."""
 
@@ -602,6 +605,23 @@ class OrviboBinaryClient:
         )
         if properties is not None:
             payload["properties"] = dict(properties)
+        if is_tv_button_order(order):
+            # IrButton -> control.a.irControl -> core.c.q0 uses a stored key
+            # order, zero values/frequency/pulse count, and no pulse data.
+            # Android JSONObject.put(name, null) omits that field.
+            payload.pop("groupId", None)
+            payload.pop("propertyResponse", None)
+            payload.update(qualityOfService=0, freq=0, pluseNum=0)
+        if infrared is not None:
+            if order != "ir control" or not infrared.pulses:
+                raise OrviboBinaryError("Invalid infrared command")
+            payload.pop("groupId", None)
+            payload.pop("propertyResponse", None)
+            payload.update(
+                freq=infrared.frequency,
+                pluseNum=len(infrared.pulses),
+                pluseData=",".join(str(duration) for duration in infrared.pulses),
+            )
         return payload
 
     def _query_devices(self) -> list[dict[str, Any]]:
@@ -654,6 +674,7 @@ def control_device(
     value3: int = 0,
     value4: int = 0,
     properties: Mapping[str, Any] | None = None,
+    infrared: OrviboInfrared | None = None,
 ) -> tuple[int | None, int | None, int | None, int | None]:
     """Send one device command through ORVIBO's mutual-TLS cloud socket."""
 
@@ -671,4 +692,5 @@ def control_device(
         value3,
         value4,
         properties,
+        infrared,
     )

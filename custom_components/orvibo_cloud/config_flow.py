@@ -461,6 +461,7 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
         self._area_index = 0
         self._raw_event_capture = False
         self._cloud_host: str | None = None
+        self._tv_profile = "lg"
 
     async def async_step_init(
         self,
@@ -477,9 +478,14 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
             self._cloud_host = None
             requested_host = str(user_input.get(CONF_HOST, current_host))
             self._raw_event_capture = bool(user_input.get(CONF_RAW_EVENT_CAPTURE, False))
+            self._tv_profile = str(user_input.get(
+                "tv_profile", self.config_entry.options.get("tv_profile", "lg")
+            ))
             if requested_host not in ORVIBO_HOSTS:
                 errors[CONF_HOST] = "invalid_host"
                 requested_host = current_host
+            elif self._tv_profile not in {"lg", "stored"}:
+                errors["tv_profile"] = "invalid_tv_profile"
             elif requested_host != current_host:
                 try:
                     account = await OrviboCloudClient(
@@ -515,6 +521,15 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_HOST, default=requested_host): _host_selector(),
+                    vol.Optional("tv_profile", default=self.config_entry.options.get(
+                        "tv_profile", "lg"
+                    )): selector.SelectSelector(selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value="lg", label="LG TV (standard infrared)"),
+                            selector.SelectOptionDict(value="stored", label="HomeMate stored TV keys (legacy)"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )),
                     vol.Required(
                         CONF_RAW_EVENT_CAPTURE,
                         default=self.config_entry.options.get(
@@ -607,6 +622,7 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                 selected_set = set(self._selected_ids)
                 options = {
                     CONF_SELECTED_DEVICE_IDS: self._selected_ids,
+                    "tv_profile": self._tv_profile,
                     CONF_RAW_EVENT_CAPTURE: self._raw_event_capture,
                     CONF_DEVICE_AREAS: {
                         device_id: area_id
