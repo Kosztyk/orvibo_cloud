@@ -1,4 +1,5 @@
 <img width="512" height="512" alt="logo" src="https://github.com/user-attachments/assets/10a03183-279c-44c6-9bff-c0eaab6959f2" />
+
 # ORVIBO Cloud
 
 A custom Home Assistant integration for ORVIBO Cloud devices, including
