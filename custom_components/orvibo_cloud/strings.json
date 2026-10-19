@@ -25,10 +25,13 @@
         }
       },
       "area": {
-        "title": "Assign device area",
-        "description": "Choose an area for {device} ({position} of {total}). The ORVIBO room is {room}.",
+        "title": "Device settings",
+        "description": "Choose an area for {device} ({position} of {total}). The ORVIBO room is {room}. {rf_note}",
         "data": {
-          "area_id": "Area"
+          "area_id": "Area",
+          "remember_assumed_state": "Remember assumed open/closed state",
+          "restore_assumed_state": "Restore assumed state after restart",
+          "assumed_state_expiry_minutes": "Assumed state expiry (minutes; 0 = never)"
         }
       },
       "reauth_confirm": {
@@ -45,7 +48,8 @@
       "unknown": "ORVIBO returned an unsupported response.",
       "no_families": "No family was found for this account.",
       "no_devices_selected": "Select at least one device.",
-      "invalid_host": "Choose one of the listed ORVIBO servers."
+      "invalid_host": "Choose one of the listed ORVIBO servers.",
+      "invalid_state_expiry": "Enter whole minutes from 0 to 525600. Use 0 for no expiry."
     },
     "abort": {
       "already_configured": "This ORVIBO account is already configured.",
@@ -73,10 +77,13 @@
         }
       },
       "area": {
-        "title": "Assign device area",
-        "description": "Choose an area for {device} ({position} of {total}). The ORVIBO room is {room}.",
+        "title": "Device settings",
+        "description": "Choose an area for {device} ({position} of {total}). The ORVIBO room is {room}. {rf_note}",
         "data": {
-          "area_id": "Area"
+          "area_id": "Area",
+          "remember_assumed_state": "Remember assumed open/closed state",
+          "restore_assumed_state": "Restore assumed state after restart",
+          "assumed_state_expiry_minutes": "Assumed state expiry (minutes; 0 = never)"
         }
       }
     },
@@ -88,7 +95,8 @@
       "invalid_host": "Choose one of the listed ORVIBO servers.",
       "family_not_found": "The current home was not found on that server; the existing configuration was kept.",
       "no_devices": "No devices were returned by that server; the existing configuration was kept.",
-      "invalid_tv_profile": "Choose one of the listed TV infrared profiles."
+      "invalid_tv_profile": "Choose one of the listed TV infrared profiles.",
+      "invalid_state_expiry": "Enter whole minutes from 0 to 525600. Use 0 for no expiry."
     },
     "abort": {
       "unknown": "The options flow lost its device state."
