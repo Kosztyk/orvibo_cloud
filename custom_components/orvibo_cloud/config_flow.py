@@ -7,12 +7,12 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.const import ATTR_AREA_ID, CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import area_registry as ar, selector
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
@@ -21,6 +21,15 @@ from .api import (
     OrviboCloudClient,
     OrviboInvalidAuthError,
     OrviboProtocolError,
+)
+from .blind_state import (
+    CONF_REMEMBER_STATE,
+    CONF_RESTORE_STATE,
+    CONF_RF_BLIND_OPTIONS,
+    CONF_STATE_EXPIRY,
+    MAX_STATE_EXPIRY_MINUTES,
+    RFBlindOptions,
+    configured_rf_blind_options,
 )
 from .const import (
     CONF_FAMILY_ID,
@@ -31,6 +40,7 @@ from .const import (
     DOMAIN,
     ORVIBO_HOSTS,
 )
+from .control import is_rf_curtain
 from .protocol import OrviboDevice, password_hash
 from .selection import (
     CONF_DEVICE_AREAS,
@@ -38,7 +48,6 @@ from .selection import (
     configured_device_areas,
     selected_device_ids,
 )
-
 
 _OTHER_DEVICE_CATEGORY = "Other devices"
 _DEFAULT_HOST = "homemate.orvibo.com"
@@ -148,15 +157,67 @@ def _device_schema(
     )
 
 
-def _area_schema(default_area_id: str | None) -> vol.Schema:
-    """Build one device-area selector with an optional discovered default."""
+def _area_schema(
+    default_area_id: str | None, rf_options: RFBlindOptions | None = None
+) -> vol.Schema:
+    """Build device settings, adding state options only for RF blinds."""
 
     key = (
         vol.Optional(ATTR_AREA_ID, default=default_area_id)
         if default_area_id
         else vol.Optional(ATTR_AREA_ID)
     )
-    return vol.Schema({key: selector.AreaSelector()})
+    fields = {key: selector.AreaSelector()}
+    if rf_options is not None:
+        fields.update(
+            {
+                vol.Required(CONF_REMEMBER_STATE, default=rf_options.remember): bool,
+                vol.Required(CONF_RESTORE_STATE, default=rf_options.restore): bool,
+                vol.Required(CONF_STATE_EXPIRY, default=rf_options.expiry_minutes): (
+                    selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=MAX_STATE_EXPIRY_MINUTES,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                            unit_of_measurement="min",
+                        )
+                    )
+                ),
+            }
+        )
+    return vol.Schema(fields)
+
+
+def _rf_options_from_input(user_input: Mapping[str, Any]) -> RFBlindOptions:
+    """Validate whole minutes, including calls that bypass the frontend."""
+
+    expiry = user_input.get(CONF_STATE_EXPIRY, 0)
+    if (
+        type(expiry) not in (int, float)
+        or not 0 <= expiry <= MAX_STATE_EXPIRY_MINUTES
+        or expiry % 1 != 0
+    ):
+        raise vol.Invalid("Invalid assumed state expiry")
+    remember = user_input.get(CONF_REMEMBER_STATE) is True
+    return RFBlindOptions(
+        remember=remember,
+        restore=remember and user_input.get(CONF_RESTORE_STATE) is True,
+        expiry_minutes=int(expiry),
+    )
+
+
+def _rf_settings_note(device: OrviboDevice, devices: tuple[OrviboDevice, ...]) -> str:
+    """Explain the optional settings only on RF blind forms."""
+
+    if not is_rf_curtain(device, devices):
+        return ""
+    return (
+        "RF blind state can follow successful Home Assistant commands: Open means "
+        "assumed open, Close means assumed closed, and Stop means unknown. "
+        "Restoration requires remembering state. Set expiry to 0 for no expiry. "
+        "App and physical remote changes are not detected."
+    )
 
 
 def _default_area_id(
@@ -187,6 +248,7 @@ class OrviboCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pending_devices: tuple[OrviboDevice, ...] = ()
         self._pending_selected_ids: list[str] = []
         self._pending_device_areas: dict[str, str | None] = {}
+        self._pending_rf_options: dict[str, RFBlindOptions] = {}
         self._area_index = 0
         self._devices_loaded = False
         self._reauth_entry: config_entries.ConfigEntry | None = None
@@ -348,6 +410,13 @@ class OrviboCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="unknown")
 
         device = devices[self._area_index]
+        errors: dict[str, str] = {}
+        if user_input is not None and is_rf_curtain(device, self._pending_devices):
+            try:
+                self._pending_rf_options[device.uid] = _rf_options_from_input(user_input)
+            except vol.Invalid:
+                errors[CONF_STATE_EXPIRY] = "invalid_state_expiry"
+                user_input = None
         if user_input is not None:
             self._pending_device_areas[device.uid] = user_input.get(ATTR_AREA_ID)
             self._area_index += 1
@@ -358,6 +427,11 @@ class OrviboCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     options={
                         CONF_SELECTED_DEVICE_IDS: self._pending_selected_ids,
                         CONF_DEVICE_AREAS: self._pending_device_areas,
+                        CONF_RF_BLIND_OPTIONS: {
+                            device_id: options.as_dict()
+                            for device_id, options in self._pending_rf_options.items()
+                            if device_id in self._pending_selected_ids
+                        },
                     },
                 )
             device = devices[self._area_index]
@@ -369,12 +443,19 @@ class OrviboCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(
             step_id="area",
-            data_schema=_area_schema(default_area_id),
+            data_schema=_area_schema(
+                default_area_id,
+                self._pending_rf_options.get(device.uid, RFBlindOptions())
+                if is_rf_curtain(device, self._pending_devices)
+                else None,
+            ),
+            errors=errors,
             description_placeholders={
                 "device": _device_label(device, categories[device.uid]),
                 "room": device.room or "-",
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
+                "rf_note": _rf_settings_note(device, self._pending_devices),
             },
         )
 
@@ -458,6 +539,7 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
         self._devices: tuple[OrviboDevice, ...] = ()
         self._selected_ids: list[str] = []
         self._device_areas: dict[str, str | None] = {}
+        self._rf_options: dict[str, RFBlindOptions] = {}
         self._area_index = 0
         self._raw_event_capture = False
         self._cloud_host: str | None = None
@@ -470,6 +552,7 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
         """Validate a server change before selecting devices on that server."""
 
         self._device_areas = configured_device_areas(self.config_entry.options)
+        self._rf_options = configured_rf_blind_options(self.config_entry.options)
         current_host = self.config_entry.data[CONF_HOST]
         errors: dict[str, str] = {}
         requested_host = current_host
@@ -615,12 +698,20 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="unknown")
 
         device = devices[self._area_index]
+        errors: dict[str, str] = {}
+        if user_input is not None and is_rf_curtain(device, self._devices):
+            try:
+                self._rf_options[device.uid] = _rf_options_from_input(user_input)
+            except vol.Invalid:
+                errors[CONF_STATE_EXPIRY] = "invalid_state_expiry"
+                user_input = None
         if user_input is not None:
             self._device_areas[device.uid] = user_input.get(ATTR_AREA_ID)
             self._area_index += 1
             if self._area_index >= len(devices):
                 selected_set = set(self._selected_ids)
                 options = {
+                    **self.config_entry.options,
                     CONF_SELECTED_DEVICE_IDS: self._selected_ids,
                     "tv_profile": self._tv_profile,
                     CONF_RAW_EVENT_CAPTURE: self._raw_event_capture,
@@ -628,6 +719,11 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                         device_id: area_id
                         for device_id, area_id in self._device_areas.items()
                         if device_id in selected_set
+                    },
+                    CONF_RF_BLIND_OPTIONS: {
+                        item.uid: self._rf_options.get(item.uid, RFBlindOptions()).as_dict()
+                        for item in devices
+                        if is_rf_curtain(item, self._devices)
                     },
                 }
                 if self._cloud_host and self._cloud_host != self.config_entry.data[CONF_HOST]:
@@ -652,12 +748,19 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
         )
         return self.async_show_form(
             step_id="area",
-            data_schema=_area_schema(default_area_id),
+            data_schema=_area_schema(
+                default_area_id,
+                self._rf_options.get(device.uid, RFBlindOptions())
+                if is_rf_curtain(device, self._devices)
+                else None,
+            ),
+            errors=errors,
             description_placeholders={
                 "device": _device_label(device, categories[device.uid]),
                 "room": device.room or "-",
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
+                "rf_note": _rf_settings_note(device, self._devices),
             },
         )
 
