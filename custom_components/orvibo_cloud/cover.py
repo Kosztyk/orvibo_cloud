@@ -75,6 +75,7 @@ class OrviboCurtainCover(CoordinatorEntity[OrviboCloudCoordinator], CoverEntity)
     ) -> None:
         super().__init__(coordinator)
         self._device_id = device_id
+        self._assumed_position: int | None = None
         self._optimistic_position: int | None = None
         self._attr_unique_id = f"{device_id}_cover"
         device = self._device
@@ -133,10 +134,11 @@ class OrviboCurtainCover(CoordinatorEntity[OrviboCloudCoordinator], CoverEntity)
 
     @property
     def current_cover_position(self) -> int | None:
-        # RF-only blinds have no measured percentage. The device table's
-        # placeholder value1=0 and a command acknowledgement are not positions.
+        # RF-only blinds have no measured percentage. The device table's placeholder value1=0 
+        # and a command acknowledgement are not positions.  Here we assume a position based on
+        # the last action called on the RF blind, acknowledging that this is not 100% fool-proof
         if self._uses_rf_control:
-            return None
+            return self._assumed_position
         if self._optimistic_position is not None:
             return self._optimistic_position
         device = self._device
@@ -151,18 +153,21 @@ class OrviboCurtainCover(CoordinatorEntity[OrviboCloudCoordinator], CoverEntity)
 
     async def async_open_cover(self, **kwargs: Any) -> None:
         if self._uses_rf_control:
-            await self._async_control(rf_curtain_command("open"), ha_position=None)
+            # Opening, so ha_position is 1
+            await self._async_control(rf_curtain_command("open"), ha_position=1)
             return
         await self._async_control(curtain_position_command(100), ha_position=100)
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         if self._uses_rf_control:
-            await self._async_control(rf_curtain_command("close"), ha_position=None)
+            # Closing, so ha_position is 0
+            await self._async_control(rf_curtain_command("close"), ha_position=0)
             return
         await self._async_control(curtain_position_command(0), ha_position=0)
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         if self._uses_rf_control:
+            # Stopping, so ha_position is None
             await self._async_control(rf_curtain_command("stop"), ha_position=None)
             return
         await self._async_control(curtain_stop_command(), ha_position=None)
@@ -204,7 +209,9 @@ class OrviboCurtainCover(CoordinatorEntity[OrviboCloudCoordinator], CoverEntity)
 
         reported_position = curtain_position_from_orvibo(reported_values[0])
         if self._uses_rf_control:
-            self._optimistic_position = None
+            # ha_position is non-zero when action is open, 0 when close, and None when stop
+            #   Set the self._assumed_position flag based off of this
+            self._assumed_position = ha_position
         elif reported_position is not None:
             self._optimistic_position = reported_position
         elif ha_position is not None:
