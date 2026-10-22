@@ -5,7 +5,22 @@
 A custom Home Assistant integration for ORVIBO Cloud devices, including
 curtains controlled through an Allone Pro.
 
-## Installation and upgrades
+## Install with HACS
+
+Before inclusion in the default HACS catalog, add this repository as a custom
+integration:
+
+1. Open **HACS** in Home Assistant and select **Custom repositories** from the
+   menu.
+2. Add `https://github.com/Kosztyk/orvibo_cloud` and select **Integration**.
+3. Install **ORVIBO Cloud** and restart Home Assistant.
+4. Open **Settings > Devices & services > Add integration**, select **ORVIBO
+   Cloud**, sign in and select your devices.
+
+HACS manages subsequent downloads and version upgrades. After acceptance into
+the default HACS catalog, the custom-repository step will no longer be needed.
+
+## Manual installation and upgrades
 
 1. Copy the `orvibo_cloud` folder from this archive into
    `/config/custom_components/`, replacing existing integration files.
@@ -89,6 +104,8 @@ in [pull request #2](https://github.com/Kosztyk/orvibo_cloud/pull/2).
 
 ## Validation
 
-51 automated checks passed on Home Assistant 2026.10.2, including RF commands,
-optional per-blind state, startup restoration, expiry, and configuration flows.
-These checks use mocked ORVIBO command replies.
+The CI checks added for v1.3.1 verify packaging, metadata and Python syntax.
+The previous 51-check runtime test suite is not included in the public repository,
+so those earlier results are historical and not reproduced here. See
+[VALIDATION.md](../../VALIDATION.md) in the repository root for the scope and
+limits of the published checks.
