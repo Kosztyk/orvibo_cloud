@@ -41,6 +41,12 @@ Use the server that contains your app's devices. The available servers are
 `usa.orvibo.com`. International accounts can try `homemate.orvibo.com` first.
 The server can be changed in the integration's configuration options.
 
+## Verified ORVIBO binary cloud TLS (v1.3.2)
+
+The port-10002 connection validates the ORVIBO self-signed CA against a bundled, fingerprint-checked trust anchor and requires a matching DNS hostname. A legacy Basic Constraints extension necessitates relaxing only the `VERIFY_X509_STRICT` check; `CERT_REQUIRED`, certificate-chain validation and hostname checking remain active. This legacy CA has been corroborated in two public integrations and observed on the live ORVIBO server, but has not been verified independently with the manufacturer. No insecure TLS fallback is provided.
+
+The version also fixes diagnostics account-email redaction, prevents cloud refreshes from overriding manually assigned device areas, synchronizes English translations, and backs off capture reconnections while stopping on rejected logins.
+
 ## Allone Pro RF blinds
 
 RF blinds associated with an Allone Pro or compatible hub expose **Open**,
@@ -104,7 +110,9 @@ in [pull request #2](https://github.com/Kosztyk/orvibo_cloud/pull/2).
 
 ## Validation
 
-The CI checks added for v1.3.1 verify packaging, metadata and Python syntax.
+The CI checks verify packaging, metadata and Python syntax. Version 1.3.2 adds
+local TLS handshake tests for legacy-CA compatibility, hostname and trust-chain
+rejection, plus rejected-login and bounded reconnect-backoff tests.
 The previous 51-check runtime test suite is not included in the public repository,
 so those earlier results are historical and not reproduced here. See
 [VALIDATION.md](VALIDATION.md) in the repository root for the scope and

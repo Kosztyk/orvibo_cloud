@@ -27,6 +27,8 @@ def inspect_repository(root: Path = ROOT) -> list[str]:
     for rel in ("README.md", "LICENSE", ".github/workflows/validate.yml",
                 "custom_components/orvibo_cloud/__init__.py",
                 "custom_components/orvibo_cloud/brand/icon.png",
+                "custom_components/orvibo_cloud/orvibo_server_ca.pem",
+                "custom_components/orvibo_cloud/translations/en.json",
                 "HACS_PUBLISHING.md", "VALIDATION.md"):
         must_exist(rel)
 
@@ -59,6 +61,12 @@ def inspect_repository(root: Path = ROOT) -> list[str]:
                 errors.append("HACS zip_release must remain unset; source archives are used")
         except (ValueError, UnicodeError) as err:
             errors.append(f"Invalid HACS manifest JSON: {err}")
+
+    strings = root / "custom_components/orvibo_cloud/strings.json"
+    english = root / "custom_components/orvibo_cloud/translations/en.json"
+    if strings.exists() and english.exists():
+        if json.loads(strings.read_text()) != json.loads(english.read_text()):
+            errors.append("English translation fallback is out of sync")
 
     component_root = root / "custom_components"
     if component_root.is_dir():

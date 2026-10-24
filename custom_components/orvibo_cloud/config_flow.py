@@ -12,6 +12,7 @@ from homeassistant.const import ATTR_AREA_ID, CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -726,6 +727,24 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                         if is_rf_curtain(item, self._devices)
                     },
                 }
+                # Only explicit changes in Options Flow update registry areas.
+                # A normal coordinator refresh or reload must preserve user edits.
+                previous_areas = configured_device_areas(self.config_entry.options)
+                device_registry = dr.async_get(self.hass)
+                for device_id, area_id in options[CONF_DEVICE_AREAS].items():
+                    if device_id in previous_areas and previous_areas[device_id] == area_id:
+                        continue
+                    registry_device = device_registry.async_get_device(
+                        identifiers={(DOMAIN, device_id)}
+                    )
+                    if (
+                        registry_device is not None
+                        and self.config_entry.entry_id in registry_device.config_entries
+                    ):
+                        device_registry.async_update_device(
+                            registry_device.id, area_id=area_id
+                        )
+
                 if self._cloud_host and self._cloud_host != self.config_entry.data[CONF_HOST]:
                     # Commit once, only after all steps are submitted. Setting
                     # data and options together prevents an intermediate reload

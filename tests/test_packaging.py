@@ -23,7 +23,7 @@ class PackagingTests(unittest.TestCase):
             (ROOT / "custom_components/orvibo_cloud/manifest.json").read_text()
         )
         self.assertEqual(m["domain"], "orvibo_cloud")
-        self.assertEqual(m["version"], "1.3.1")
+        self.assertEqual(m["version"], "1.3.2")
         self.assertEqual(m["integration_type"], "hub")
 
     def test_hacs_metadata(self):
