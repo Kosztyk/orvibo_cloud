@@ -6,6 +6,7 @@ from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_PASSWORD_HASH, CONF_USER_ID, DOMAIN
@@ -13,7 +14,7 @@ from .control import is_allone_tv, is_rf_curtain, tv_commands_for_profile
 from .coordinator import OrviboCloudCoordinator
 from .selection import device_is_selected
 
-_TO_REDACT = {CONF_PASSWORD_HASH, CONF_USER_ID}
+_TO_REDACT = {CONF_PASSWORD_HASH, CONF_USER_ID, CONF_EMAIL}
 
 
 async def async_get_config_entry_diagnostics(

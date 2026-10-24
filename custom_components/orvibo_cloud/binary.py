@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import json
+import hashlib
 import logging
 from pathlib import Path
 import secrets
@@ -32,6 +33,15 @@ _MAX_DEVICE_PAGES: Final = 20
 _SESSION_RESPONSE_IDLE_TIMEOUT: Final = 0.2
 _CERT_PATH: Final = Path(__file__).with_name("orvibo_client_cert.pem")
 _KEY_PATH: Final = Path(__file__).with_name("orvibo_client_key.pem")
+# Legacy ORVIBO 10002 self-signed CA corroborated in two established public
+# ORVIBO integrations and the user's TLS diagnostic; not a WebPKI root.
+_PINNED_SERVER_CA: Final = Path(__file__).with_name("orvibo_server_ca.pem")
+_PINNED_SERVER_CA_SHA256: Final = "f0046d72573a8e20cad178194385259f7338be2c9f9d12ac8646d1a24160ce2a"
+
+# Persistent, operator-provided regional CA trust anchors. Never auto-import
+# a certificate from the network: its authenticity must be checked out-of-band.
+# Store the PEM outside custom_components so updates do not delete it.
+_SERVER_CA_DIRECTORY: Final = Path(__file__).resolve().parents[2] / "orvibo_trust"
 
 
 def _safe_protocol_number(value: object) -> int | None:
@@ -121,11 +131,16 @@ class OrviboBinaryError(Exception):
     """Raised when an ORVIBO binary operation fails."""
 
 
+class OrviboAuthenticationError(OrviboBinaryError):
+    """A confirmed rejection of the binary ORVIBO cloud login."""
+
+
 class OrviboCaptureError(OrviboBinaryError):
     """Describe a capture failure without exposing connection credentials."""
 
     def __init__(self, stage: str, cause: BaseException) -> None:
         self.stage = stage
+        self.auth_rejected = isinstance(cause, OrviboAuthenticationError)
         self.error_type = type(cause).__name__
         if isinstance(cause, OSError):
             self.detail = f"{self.error_type} (errno={cause.errno!r})"
@@ -332,15 +347,42 @@ class OrviboBinaryClient:
         if not _CERT_PATH.is_file() or not _KEY_PATH.is_file():
             raise OrviboBinaryError("ORVIBO client certificate files are missing")
 
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # The private port uses ORVIBO's legacy certificate chain.
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        # Require system-trusted server certificate AND matching server hostname.
+        # Never fall back to an insecure connection, including legacy servers.
+        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        # The specific ORVIBO private CA has been corroborated against two
+        # public source repositories and a captured server chain, but it is
+        # not a WebPKI-trusted or independently manufacturer-authenticated CA.
+        # Pin the exact CA DER fingerprint before it can be a trust anchor.
+        if not _PINNED_SERVER_CA.is_file():
+            raise OrviboBinaryError("ORVIBO pinned server CA is missing")
+        pem = _PINNED_SERVER_CA.read_text(encoding="ascii")
+        actual_hash = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+        if actual_hash != _PINNED_SERVER_CA_SHA256:
+            raise OrviboBinaryError("ORVIBO pinned server CA fingerprint mismatch")
+        context.load_verify_locations(cafile=str(_PINNED_SERVER_CA))
+        # Preserve optional operator-supplied additional regional CAs.
+        ca_file = _SERVER_CA_DIRECTORY / f"{self._host}.pem"
+        if ca_file.is_file():
+            context.load_verify_locations(cafile=str(ca_file))
+        # ORVIBO's 2018 private CA has a non-critical Basic Constraints
+        # extension. Recent Python/OpenSSL strict X.509 verification rejects
+        # that legacy encoding despite a trusted pinned CA. Relax ONLY the
+        # strict RFC-extension check, retaining certificate-chain verification,
+        # trusted CA validation, expiry checks and DNS hostname verification.
+        # Never set CERT_NONE or disable hostname checks.
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
         context.load_cert_chain(_CERT_PATH, _KEY_PATH)
 
         raw_socket = socket.create_connection((self._host, _PORT), timeout=15)
         raw_socket.settimeout(15)
-        self._socket = context.wrap_socket(raw_socket, server_hostname=self._host)
+        try:
+            self._socket = context.wrap_socket(raw_socket, server_hostname=self._host)
+        except BaseException:
+            raw_socket.close()
+            raise
 
     def _next_serial(self) -> int:
         self._serial += 1
@@ -539,7 +581,7 @@ class OrviboBinaryClient:
                 f"(packets={len(packets)}, commands={commands})"
             )
         if response.get("status") not in (None, 0, "0"):
-            raise OrviboBinaryError(
+            raise OrviboAuthenticationError(
                 "ORVIBO binary login was rejected "
                 f"(status={response.get('status')!r})"
             )

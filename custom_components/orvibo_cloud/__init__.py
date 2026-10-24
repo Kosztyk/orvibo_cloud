@@ -137,6 +137,9 @@ def _async_register_devices(
         fallback_name = (
             device.model or device.device_type or f"ORVIBO {device.uid[-6:]}"
         )
+        newly_registered = registry.async_get_device(
+            identifiers={(DOMAIN, device.uid)}
+        ) is None
         registry_device = registry.async_get_or_create(
             config_entry_id=entry.entry_id,
             identifiers={(DOMAIN, device.uid)},
@@ -146,7 +149,8 @@ def _async_register_devices(
             suggested_area=device.room or None,
             via_device=account_identifier,
         )
-        if device.uid in device_areas:
+        # Never overwrite the area when the user moved a registered device.
+        if newly_registered and device.uid in device_areas:
             registry.async_update_device(
                 registry_device.id,
                 area_id=device_areas[device.uid],

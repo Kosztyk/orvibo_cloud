@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from threading import Event, Lock, Thread
 from typing import Any, Final
 
@@ -17,7 +18,9 @@ from .binary import OrviboBinaryClient, OrviboCaptureError
 from .const import ORVIBO_LOCK_EVENT
 
 _LOGGER = logging.getLogger(__name__)
-_RECONNECT_DELAY_SECONDS: Final =5
+_INITIAL_RECONNECT_DELAY_SECONDS: Final = 5
+_MAX_RECONNECT_DELAY_SECONDS: Final = 300
+_STABLE_CONNECTION_SECONDS: Final = 120
 _MAX_DEPTH: Final =6
 _MAX_ITEMS: Final =50
 _REDACTED: Final = "<redacted>"
@@ -229,38 +232,62 @@ class OrviboRawEventCapture:
         self._thread = None
 
     def _run(self) -> None:
+        """Retry transient failures with bounded backoff; stop on rejected login."""
+
+        failures = 0
         while not self._stop_event.is_set():
+            started_at = time.monotonic()
             client = OrviboBinaryClient(*self._connection)
             with self._socket_lock:
                 self._client = client
+            retry_delay = _INITIAL_RECONNECT_DELAY_SECONDS
+            stop_auth_retry = False
             try:
                 client.capture_events(self._stop_event, self._capture)
             except OrviboCaptureError as err:
                 if not self._stop_event.is_set():
-                    _LOGGER.warning(
-                        "ORVIBO raw event capture disconnected "
-                        "(stage=%s, error=%s, detail=%s); "
-                        "retrying in %s seconds",
-                        err.stage,
-                        err.error_type,
-                        err.detail,
-                        _RECONNECT_DELAY_SECONDS,
-                    )
-            except Exception as err: # noqa: BLE001 - keep the capture thread alive.
+                    if err.auth_rejected:
+                        stop_auth_retry = True
+                        _LOGGER.error(
+                            "ORVIBO binary push login rejected; listener stopped "
+                            "until integration reload or account reauthentication"
+                        )
+                    else:
+                        if time.monotonic() - started_at >= _STABLE_CONNECTION_SECONDS:
+                            failures = 0
+                        retry_delay = min(
+                            _INITIAL_RECONNECT_DELAY_SECONDS * (2 ** min(failures, 6)),
+                            _MAX_RECONNECT_DELAY_SECONDS,
+                        )
+                        failures += 1
+                        _LOGGER.warning(
+                            "ORVIBO raw event capture disconnected "
+                            "(stage=%s, error=%s, detail=%s); retrying in %s seconds",
+                            err.stage, err.error_type, err.detail, retry_delay,
+                        )
+            except Exception as err:  # noqa: BLE001 - keep listener thread alive.
                 if not self._stop_event.is_set():
+                    if time.monotonic() - started_at >= _STABLE_CONNECTION_SECONDS:
+                        failures = 0
+                    retry_delay = min(
+                        _INITIAL_RECONNECT_DELAY_SECONDS * (2 ** min(failures, 6)),
+                        _MAX_RECONNECT_DELAY_SECONDS,
+                    )
+                    failures += 1
                     _LOGGER.warning(
                         "ORVIBO raw event capture disconnected "
                         "(stage=internal, error=%s, detail=unexpected capture failure); "
                         "retrying in %s seconds",
-                        type(err).__name__,
-                        _RECONNECT_DELAY_SECONDS,
+                        type(err).__name__, retry_delay,
                     )
             finally:
                 client.close()
                 with self._socket_lock:
                     if self._client is client:
                         self._client = None
-            self._stop_event.wait(_RECONNECT_DELAY_SECONDS)
+            if stop_auth_retry:
+                break
+            self._stop_event.wait(retry_delay)
 
     def _capture(self, packet: Mapping[str, Any]) -> None:
         lock_event = parse_lock_event(packet)
