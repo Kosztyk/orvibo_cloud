@@ -11,8 +11,8 @@ from typing import Any, Final, Mapping, Sequence
 
 import aiohttp
 
-from .const import ORVIBO_HOSTS
 from .protocol import (
+    ORVIBO_HOSTS,
     OrviboDevice,
     OrviboFamily,
     build_family_request,
@@ -198,7 +198,16 @@ class OrviboCloudClient:
         family_id: str,
     ) -> tuple[tuple[OrviboDevice, ...], str, str]:
         """Fetch the full device snapshot using the current app endpoint."""
+        payload = await self._async_readtable_payload(host, access_token, user_id, family_id)
+        devices = parse_readtable_devices(payload)
+        binary_user_name, binary_password = _binary_credentials(payload, user_id)
+        _LOGGER.debug("ORVIBO readtable discovery returned %d devices", len(devices))
+        return devices, binary_user_name, binary_password
 
+    async def _async_readtable_payload(
+        self, host: str, access_token: str, user_id: str, family_id: str
+    ) -> Mapping[str, Any]:
+        """Fetch the authenticated household tables."""
         now = time.time()
         body = build_readtable_request(
             access_token=access_token,
@@ -227,13 +236,7 @@ class OrviboCloudClient:
             status = payload.get("status", payload.get("code"))
             raise OrviboProtocolError(f"Readtable request failed (status={status!r})")
 
-        devices = parse_readtable_devices(payload)
-        binary_user_name, binary_password = _binary_credentials(payload, user_id)
-        _LOGGER.debug(
-            "ORVIBO readtable discovery returned %d devices",
-            len(devices),
-        )
-        return devices, binary_user_name, binary_password
+        return payload
 
 
 def _binary_credentials(

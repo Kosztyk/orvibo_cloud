@@ -76,7 +76,7 @@ class TLSConnectionTests(unittest.TestCase):
         ).hexdigest()
 
     @contextmanager
-    def server(self, name):
+    def server(self, name, *, expect_rejection=False):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(
             self.root / f"{name}-server.pem", self.root / f"{name}-server.key"
@@ -95,8 +95,10 @@ class TLSConnectionTests(unittest.TestCase):
                     with context.wrap_socket(raw, server_side=True) as secured:
                         secured.sendall(b"x")
                         secured.recv(1)
-            except ssl.SSLError:
-                pass  # Expected when the client rejects the certificate.
+            except (ssl.SSLError, ConnectionResetError) as err:
+                # Windows can report a reset when the client rejects TLS.
+                if not expect_rejection:
+                    errors.append(err)
             except Exception as err:
                 errors.append(err)
 
@@ -112,7 +114,9 @@ class TLSConnectionTests(unittest.TestCase):
 
     def connect(self, host="localhost", server="trusted"):
         client = binary.OrviboBinaryClient(host, "test", "test", "test")
-        with self.server(server) as address:
+        with self.server(
+            server, expect_rejection=(host != "localhost" or server != "trusted")
+        ) as address:
             raw = socket.create_connection(address, timeout=5)
             with (
                 patch.object(binary, "_PINNED_SERVER_CA", self.ca),
