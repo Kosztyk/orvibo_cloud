@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_PASSWORD_HASH, CONF_USER_ID, DOMAIN
 from .control import is_allone_tv, is_rf_curtain, tv_commands_for_profile
 from .coordinator import OrviboCloudCoordinator
+from .protocol import ac_hub_matches
 from .selection import device_is_selected
 
 _TO_REDACT = {CONF_PASSWORD_HASH, CONF_USER_ID, CONF_EMAIL}
@@ -44,6 +45,12 @@ async def async_get_config_entry_diagnostics(
                 "model": device.model,
                 "device_type": device.device_type,
                 "sub_device_type": device.sub_device_type,
+                "ir_profile_id": device.ir_profile_id or None,
+                "ac_hub_matches": (
+                    ac_hub_matches(device, coordinator.data.devices)
+                    if (device.device_type, device.sub_device_type) == ("5", "2")
+                    else []
+                ),
                 "room": device.room,
                 "parent_uid": "**REDACTED**" if device.parent_uid else "",
                 "online": device.online,

@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 import hashlib
 import hmac
 from typing import Any, Final, Mapping
+
+ORVIBO_HOSTS: Final = (
+    "china.orvibo.com",
+    "homemate.orvibo.com",
+    "germany.orvibo.com",
+    "usa.orvibo.com",
+)
 
 _HMAC_SECRET: Final = "nQ45RjPtOws96jmH"
 
@@ -36,6 +44,29 @@ class OrviboDevice:
     value3: int | None = None
     value4: int | None = None
     properties: Mapping[str, Any] = field(default_factory=dict)
+    ir_profile_id: str = ""
+
+
+def ac_hub_matches(
+    device: OrviboDevice, devices: Iterable[OrviboDevice]
+) -> list[dict[str, str | bool | None]]:
+    """Summarize candidate IR hubs without exposing account or device identifiers."""
+    matches = []
+    for hub in devices:
+        if hub.device_type not in {"30", "67"}:
+            continue
+        same_model = bool(device.model and device.model == hub.model)
+        same_cloud_uid = bool(device.cloud_uid and device.cloud_uid == hub.cloud_uid)
+        parent_match = bool(device.parent_uid and device.parent_uid in (hub.uid, hub.cloud_uid))
+        if same_model or same_cloud_uid or parent_match:
+            matches.append({
+                "device_type": hub.device_type,
+                "same_model": same_model,
+                "same_cloud_uid": same_cloud_uid,
+                "parent_match": parent_match,
+                "online": hub.online,
+            })
+    return matches
 
 
 def password_hash(password: str) -> str:
@@ -190,6 +221,26 @@ def property_percentage(
     return percentage if 0 <= percentage <= 100 else None
 
 
+def _ac_ir_profile_id(item: Mapping[str, Any], device_type: str) -> str:
+    """Extract the numeric HomeMate profile from an AC device row."""
+    if device_type != "5":
+        return ""
+    values = set()
+    for key in ("irDeviceId", "irDeviceID"):
+        if key not in item:
+            continue
+        raw = item[key]
+        if type(raw) not in (int, str):
+            return ""
+        value = str(raw).strip()
+        if not value.isascii() or not value.isdecimal() or len(value) > 12:
+            return ""
+        if int(value) == 0:
+            return ""
+        values.add(value)
+    return values.pop() if len(values) == 1 else ""
+
+
 def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, ...]:
     """Normalize the device table and join its room and online-state tables."""
 
@@ -252,6 +303,9 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
         if device_id not in online_by_device:
             online = _parse_online(item.get("online"))
         values = values_by_device.get(device_id, (None, None, None, None))
+        device_type = _first_text(
+            item, ("deviceType", "devType", "type", "category", "deviceCategory")
+        )
         devices[device_id] = OrviboDevice(
             uid=device_id,
             name=_first_text(
@@ -270,10 +324,8 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
                     "productID",
                 ),
             ),
-            device_type=_first_text(
-                item,
-                ("deviceType", "devType", "type", "category", "deviceCategory"),
-            ),
+            device_type=device_type,
+            ir_profile_id=_ac_ir_profile_id(item, device_type),
             room=_first_text(item, ("roomName", "room"))
             or room_names.get(room_id, ""),
             parent_uid=_first_text(
@@ -300,6 +352,9 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
         if device_id in devices or not properties:
             continue
         values = values_by_device[device_id]
+        device_type = _first_text(
+            item, ("deviceType", "devType", "type", "category", "deviceCategory")
+        )
         devices[device_id] = OrviboDevice(
             uid=device_id,
             name=_first_text(
@@ -319,10 +374,8 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
                     "pdid",
                 ),
             ),
-            device_type=_first_text(
-                item,
-                ("deviceType", "devType", "type", "category", "deviceCategory"),
-            ),
+            device_type=device_type,
+            ir_profile_id=_ac_ir_profile_id(item, device_type),
             room=_first_text(item, ("roomName", "room")),
             parent_uid=_first_text(
                 item,
