@@ -1,0 +1,5 @@
+# Dependencies needed for the isolated release/CI test environment.
+# tools/check_baxi_route.py imports aiohttp at module load time.
+aiohttp>=3.11,<4
+# TLS handshake and ORVIBO binary-protocol regression tests.
+pycryptodome==3.23.0
