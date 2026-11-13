@@ -1,4 +1,4 @@
-"""Route AC infrared commands through the existing ORVIBO TLS client."""
+"""Send virtual infrared AC commands through the existing verified TLS client."""
 
 from __future__ import annotations
 
@@ -17,22 +17,25 @@ from .protocol import OrviboDevice
 def has_available_route(
     device: OrviboDevice, devices: Iterable[OrviboDevice], hub_type: str
 ) -> bool:
-    """Check the hub association without routing a command to a hub row."""
+    """Require a profile-compatible hub sharing the remote's cloud routing identifiers.
+
+    Magic Cube may return duplicate hub rows. Allone Pro should be unique.
+    """
     if not device.uid or not device.cloud_uid or not device.model:
         return False
     matches = [
         hub for hub in devices
-        if hub.device_type == hub_type and hub.cloud_uid == device.cloud_uid
+        if hub.device_type == hub_type
+        and hub.cloud_uid == device.cloud_uid
         and hub.model == device.model
     ]
     if hub_type == "30":
-        # The Magic Cube can appear as multiple rows sharing the same route.
         return device.online is True and any(hub.online is True for hub in matches)
     return len(matches) == 1 and matches[0].online is not False
 
 
 class OrviboACBackend:
-    """Resolve current routing and send one validated IR signal."""
+    """Resolve the live route and perform exactly one control request."""
 
     def __init__(self, coordinator: OrviboCloudCoordinator, profile: ACProfile) -> None:
         self.coordinator = coordinator
@@ -50,7 +53,7 @@ class OrviboACBackend:
     async def async_send(
         self, device: OrviboDevice, command: OrviboControlCommand
     ) -> None:
-        """Send under the caller's control lock without retrying on failure."""
+        """Send under caller's shared control lock; never auto-retry an IR request."""
         if not self.available(device):
             raise HomeAssistantError("The ORVIBO AC remote is unavailable")
         account = self.coordinator.data
@@ -64,8 +67,14 @@ class OrviboACBackend:
                 entry_data[CONF_FAMILY_ID],
                 device.uid,
                 device.cloud_uid,
-                command.order, command.value1, command.value2, command.value3,
-                command.value4, command.properties, command.infrared,
+                command.order,
+                command.value1,
+                command.value2,
+                command.value3,
+                command.value4,
+                command.properties,
+                command.infrared,
             )
         except (OrviboBinaryError, OSError):
+            # Never expose raw low-level errors: they can contain private protocol data.
             raise HomeAssistantError("ORVIBO did not acknowledge the AC command") from None

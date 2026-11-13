@@ -95,7 +95,7 @@ def _async_register_devices(
     registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
     account_identifier = (DOMAIN, entry.data["user_id"])
-    registry.async_get_or_create(
+    account_device = registry.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={account_identifier},
         manufacturer="ORVIBO",
@@ -126,10 +126,10 @@ def _async_register_devices(
         ):
             if entity.config_entry_id == entry.entry_id:
                 entity_registry.async_remove(entity.entity_id)
-        registry.async_update_device(
-            registry_device.id,
-            remove_config_entry_id=entry.entry_id,
-        )
+        # A device belongs to exactly one config entry in HA 2026.11.
+        # Removing the unselected device is the supported replacement for
+        # the deprecated remove_config_entry_id mutation.
+        registry.async_remove_device(registry_device.id)
 
     for device in coordinator.data.devices:
         if device.uid not in selected_ids:
@@ -137,9 +137,11 @@ def _async_register_devices(
         fallback_name = (
             device.model or device.device_type or f"ORVIBO {device.uid[-6:]}"
         )
-        newly_registered = registry.async_get_device(
-            identifiers={(DOMAIN, device.uid)}
-        ) is None
+        newly_registered = (
+            registry.async_get_device_by_identifier(
+                (DOMAIN, device.uid), entry.entry_id
+            ) is None
+        )
         registry_device = registry.async_get_or_create(
             config_entry_id=entry.entry_id,
             identifiers={(DOMAIN, device.uid)},
@@ -147,7 +149,7 @@ def _async_register_devices(
             model=device.model or device.device_type or "Cloud device",
             name=device.name or fallback_name,
             suggested_area=device.room or None,
-            via_device=account_identifier,
+            via_device_id=account_device.id,
         )
         # Never overwrite the area when the user moved a registered device.
         if newly_registered and device.uid in device_areas:

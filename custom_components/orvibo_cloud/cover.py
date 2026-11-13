@@ -16,6 +16,7 @@ from homeassistant.components.cover import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_point_in_utc_time
@@ -94,14 +95,17 @@ class OrviboCurtainCover(
         self._attr_unique_id = f"{device_id}_cover"
         device = self._device
         assert device is not None
-        account_identifier = (DOMAIN, coordinator.entry.data[CONF_USER_ID])
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_id)},
             manufacturer="ORVIBO",
             model=device.model or "Curtain",
             name=device.name or "ORVIBO Curtain",
             suggested_area=device.room or None,
-            via_device=account_identifier,
+            via_device_id=dr.async_get_device_id_by_identifier(
+                coordinator.hass,
+                (DOMAIN, coordinator.entry.data[CONF_USER_ID]),
+                config_entry_id=coordinator.entry.entry_id,
+            ),
         )
 
     async def async_added_to_hass(self) -> None:

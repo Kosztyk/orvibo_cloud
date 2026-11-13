@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -51,7 +52,11 @@ class OrviboCloudDeviceEntity(CoordinatorEntity[OrviboCloudCoordinator]):
                 or f"ORVIBO {device_id[-6:]}"
             ),
             suggested_area=device.room or None,
-            via_device=(DOMAIN, coordinator.entry.data[CONF_USER_ID]),
+            via_device_id=dr.async_get_device_id_by_identifier(
+                coordinator.hass,
+                (DOMAIN, coordinator.entry.data[CONF_USER_ID]),
+                config_entry_id=coordinator.entry.entry_id,
+            ),
         )
 
     @property

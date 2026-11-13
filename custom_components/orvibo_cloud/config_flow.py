@@ -734,13 +734,10 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                 for device_id, area_id in options[CONF_DEVICE_AREAS].items():
                     if device_id in previous_areas and previous_areas[device_id] == area_id:
                         continue
-                    registry_device = device_registry.async_get_device(
-                        identifiers={(DOMAIN, device_id)}
+                    registry_device = device_registry.async_get_device_by_identifier(
+                        (DOMAIN, device_id), self.config_entry.entry_id
                     )
-                    if (
-                        registry_device is not None
-                        and self.config_entry.entry_id in registry_device.config_entries
-                    ):
+                    if registry_device is not None:
                         device_registry.async_update_device(
                             registry_device.id, area_id=area_id
                         )

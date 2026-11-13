@@ -20,6 +20,8 @@ from .coordinator import OrviboCloudCoordinator
 from .entity import OrviboCloudDeviceEntity, OrviboCloudEntity
 from .protocol import property_percentage
 from .selection import device_is_selected
+from .ac_profiles import ac_profile
+from .ac_backend import has_available_route
 
 
 async def async_setup_entry(
@@ -37,6 +39,12 @@ async def async_setup_entry(
         for device in coordinator.data.devices
         if device_is_selected(entry.options, device.uid)
         and "battery_power" in device.properties
+    )
+    entities.extend(
+        OrviboVivaxProfileSensor(coordinator, device.uid)
+        for device in coordinator.data.devices
+        if device_is_selected(entry.options, device.uid)
+        and (device.device_type, device.sub_device_type, device.ir_profile_id) == ("5", "2", "7579")
     )
     async_add_entities(entities)
 
@@ -125,3 +133,40 @@ class OrviboBatterySensor(OrviboCloudDeviceEntity, SensorEntity):
         if device is None:
             return None
         return property_percentage(device.properties, "battery_power")
+
+
+class OrviboVivaxProfileSensor(OrviboCloudDeviceEntity, SensorEntity):
+    """Expose supported Vivax/Midea encoder and live hub routing."""
+
+    _attr_name = "IR profile"
+    _attr_icon = "mdi:remote"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: OrviboCloudCoordinator, device_id: str) -> None:
+        super().__init__(coordinator, device_id)
+        self._attr_unique_id = f"{device_id}_ir_profile"
+
+    @property
+    def native_value(self) -> str:
+        return "7579"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        device = self._device
+        profile = ac_profile(device) if device is not None else None
+        return {
+            "hub_type": "67",
+            "hub_matched": bool(
+                device is not None and has_available_route(
+                    device, self.coordinator.data.devices, "67"
+                )
+            ),
+            "ir_protocol_candidate": "Midea 48-bit",
+            "protocol_status": "maintainer_hardware_tested_vivax_7579",
+            "waveform_source": "local_dynamic_encoder",
+            "scene_dependency": False,
+            "supported_modes": list(profile.modes) if profile else [],
+            "temperature_range_c": [17, 30],
+            "fan_modes": ["auto", "low", "medium", "high"],
+            "vertical_swing": "relative_toggle_kaysun_0xA202FFFFFF7E",
+        }

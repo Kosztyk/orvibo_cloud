@@ -47,10 +47,8 @@ class OrviboDevice:
     ir_profile_id: str = ""
 
 
-def ac_hub_matches(
-    device: OrviboDevice, devices: Iterable[OrviboDevice]
-) -> list[dict[str, str | bool | None]]:
-    """Summarize candidate IR hubs without exposing account or device identifiers."""
+def ac_hub_matches(device: OrviboDevice, devices: Iterable[OrviboDevice]) -> list[dict[str, str | bool | None]]:
+    """Describe compatible infrared hub candidates without reporting identifiers."""
     matches = []
     for hub in devices:
         if hub.device_type not in {"30", "67"}:
@@ -60,10 +58,8 @@ def ac_hub_matches(
         parent_match = bool(device.parent_uid and device.parent_uid in (hub.uid, hub.cloud_uid))
         if same_model or same_cloud_uid or parent_match:
             matches.append({
-                "device_type": hub.device_type,
-                "same_model": same_model,
-                "same_cloud_uid": same_cloud_uid,
-                "parent_match": parent_match,
+                "device_type": hub.device_type, "same_model": same_model,
+                "same_cloud_uid": same_cloud_uid, "parent_match": parent_match,
                 "online": hub.online,
             })
     return matches
@@ -222,7 +218,7 @@ def property_percentage(
 
 
 def _ac_ir_profile_id(item: Mapping[str, Any], device_type: str) -> str:
-    """Extract the numeric HomeMate profile from an AC device row."""
+    """Extract a validated HomeMate IR profile identifier for virtual AC devices."""
     if device_type != "5":
         return ""
     values = set()
@@ -303,9 +299,6 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
         if device_id not in online_by_device:
             online = _parse_online(item.get("online"))
         values = values_by_device.get(device_id, (None, None, None, None))
-        device_type = _first_text(
-            item, ("deviceType", "devType", "type", "category", "deviceCategory")
-        )
         devices[device_id] = OrviboDevice(
             uid=device_id,
             name=_first_text(
@@ -324,8 +317,14 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
                     "productID",
                 ),
             ),
-            device_type=device_type,
-            ir_profile_id=_ac_ir_profile_id(item, device_type),
+            device_type=_first_text(
+                item,
+                ("deviceType", "devType", "type", "category", "deviceCategory"),
+            ),
+            ir_profile_id=_ac_ir_profile_id(
+                item,
+                _first_text(item, ("deviceType", "devType", "type", "category", "deviceCategory")),
+            ),
             room=_first_text(item, ("roomName", "room"))
             or room_names.get(room_id, ""),
             parent_uid=_first_text(
@@ -352,9 +351,6 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
         if device_id in devices or not properties:
             continue
         values = values_by_device[device_id]
-        device_type = _first_text(
-            item, ("deviceType", "devType", "type", "category", "deviceCategory")
-        )
         devices[device_id] = OrviboDevice(
             uid=device_id,
             name=_first_text(
@@ -374,8 +370,14 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
                     "pdid",
                 ),
             ),
-            device_type=device_type,
-            ir_profile_id=_ac_ir_profile_id(item, device_type),
+            device_type=_first_text(
+                item,
+                ("deviceType", "devType", "type", "category", "deviceCategory"),
+            ),
+            ir_profile_id=_ac_ir_profile_id(
+                item,
+                _first_text(item, ("deviceType", "devType", "type", "category", "deviceCategory")),
+            ),
             room=_first_text(item, ("roomName", "room")),
             parent_uid=_first_text(
                 item,

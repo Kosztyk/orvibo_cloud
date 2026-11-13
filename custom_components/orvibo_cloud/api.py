@@ -207,7 +207,7 @@ class OrviboCloudClient:
     async def _async_readtable_payload(
         self, host: str, access_token: str, user_id: str, family_id: str
     ) -> Mapping[str, Any]:
-        """Fetch the authenticated household tables."""
+        """Fetch the authenticated household tables without changing the API request."""
         now = time.time()
         body = build_readtable_request(
             access_token=access_token,

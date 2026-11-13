@@ -1,24 +1,22 @@
 # Changelog
 
-## 1.3.2 — HACS reviewer fixes
+## 1.4.0 — 2026-11-13
 
-1. **Authenticated TLS:** port 10002 uses hostname checks and `ssl.CERT_REQUIRED` with the ORVIBO private CA bundled and fingerprint checked before loading it. The server trust anchor was corroborated against two public ORVIBO integration repositories and a certificate chain observed on the user's server. The CA is self-signed and its authenticity has not been confirmed by ORVIBO directly. `VERIFY_X509_STRICT` alone is relaxed because this 2018 CA has non-critical Basic Constraints; ordinary certificate-chain, validity and DNS hostname verification remain enabled. There is no `CERT_NONE` fallback.
-2. **Account privacy:** diagnostic export redacts `CONF_EMAIL` in addition to password hash and user ID.
-3. **Area persistence:** initial device registration applies configured areas; polling no longer overwrites manual Home Assistant area assignments. An explicit options-flow change still updates the area.
-4. **English translations:** `translations/en.json` now matches `strings.json`.
-5. **Capture reconnects:** rejected binary login ends the capture listener; transient network errors back off exponentially from five seconds to five minutes.
+- Add exact-profile cloud IR climate support for Daikin (10502), BAXI (7404), and Vivax/Midea (7579), derived from PR #5 and subsequent maintainer testing.
+- Native Midea 48-bit encoding for Vivax, including the physically tested Kaysun/Midea vertical swing toggle `0xA202FFFFFF7E`. No HomeMate scene dependencies or fallback.
+- Support full-state climate mode, temperature and fan commands; profile-specific swing/preset features; report only the last acknowledged requested (assumed) state.
+- Migrate deprecated Home Assistant device-registry APIs and native climate temperature properties for HA 2026.11.
+- Hide unverified BAXI horizontal-only swing; preserve original verified binary TLS transport, client credentials, and existing blinds/TV device control behavior.
+- Add protocol regression tests, contributor credit, release notes and automated tag publishing.
 
-The tested integration's protocol, device controls and remembered blind-state logic are otherwise unchanged. Live device operation was confirmed by the integration maintainer on the local test build; CI cannot reproduce a real ORVIBO device connection.
+## 1.3.2 — 2026-10-24
 
-## 1.3.1 — HACS publication preparation
+- Authenticate ORVIBO port-10002 TLS using pinned bundled CA and DNS hostname verification; relax only the OpenSSL X.509 strict flag required by the legacy CA.
+- Redact diagnostics account email, preserve manually assigned HA areas, synchronize English translations, and bound raw-capture reconnects.
 
-- Add HACS and Hassfest GitHub Actions validation with no skipped HACS checks.
-- Add offline packaging checks and Python syntax validation.
-- Add GitHub Actions publishing workflow for the 1.3.1 release, guarded by
-  successful validation on the main branch.
-- Align root and integration README documentation, including HACS installation
-  and the optional per-blind remembered-state feature.
-- Clarify that earlier claimed hardware/runtime tests are not bundled.
-- Make the HACS display name human-readable and add the integration type.
+## 1.3.1 — 2026-10-22
 
-**No runtime device control, login, network protocol, TLS or blind logic changed.**
+- Prepare HACS and Hassfest validation, manifest metadata, and repository structure.
+- Document RF blind assumed-state persistence and restoration.
+
+See `RELEASE_NOTES_1.4.0.md` and `RELEASE_NOTES_1.3.2.md` for details.

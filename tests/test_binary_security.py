@@ -47,13 +47,25 @@ class TLSConnectionTests(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
 
-        # Non-critical CA Basic Constraints reproduces ORVIBO's legacy encoding.
+        # Generate the legacy CA through a config file rather than `-addext`.
+        # This works with macOS LibreSSL as well as OpenSSL 3. The Basic
+        # Constraints extension remains non-critical, matching ORVIBO's CA.
+        ca_config = cls.root / "ca.cnf"
+        ca_config.write_text(
+            "[req]\n"
+            "distinguished_name = dn\n"
+            "x509_extensions = ca_ext\n"
+            "[dn]\n"
+            "[ca_ext]\n"
+            "basicConstraints = CA:TRUE\n"
+            "keyUsage = critical,keyCertSign,cRLSign\n"
+        )
         for name in ("trusted", "untrusted"):
             openssl(
                 "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
                 "-subj", f"/CN={name} test CA", "-keyout", f"{name}.key",
-                "-out", f"{name}.pem", "-addext", "basicConstraints=CA:TRUE",
-                "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                "-out", f"{name}.pem", "-config", str(ca_config),
+                "-extensions", "ca_ext",
             )
             openssl(
                 "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost",
@@ -96,7 +108,7 @@ class TLSConnectionTests(unittest.TestCase):
                         secured.sendall(b"x")
                         secured.recv(1)
             except (ssl.SSLError, ConnectionResetError) as err:
-                # Windows can report a reset when the client rejects TLS.
+                # Some OSes reset a connection when client rejects the certificate.
                 if not expect_rejection:
                     errors.append(err)
             except Exception as err:

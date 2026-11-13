@@ -1,17 +1,32 @@
-# Validation status and limitations
+# Validation — ORVIBO Cloud v1.4.0
 
-## Automated checks for v1.3.2
+## CI gates
 
-The GitHub Actions workflow `.github/workflows/validate.yml` runs:
+The `Validate ORVIBO Cloud` workflow runs on pushes and pull requests, including the production main-branch push:
 
-- **HACS Validation** using `hacs/action@main`, with category `integration`
-  and no ignored checks.
-- **Hassfest Validation** using `home-assistant/actions/hassfest@master`.
-- **Packaging and Python checks** for manifest structure, HACS metadata,
-  repository layout, version formatting, and Python compilation, plus TLS and
-  listener regression tests. The suite contains 16 tests.
+- Static repository/HACS packaging check: `python tools/check_repository.py`
+- `pycryptodome==3.23.0` installation and all unittest modules: `python -m unittest discover -s tests -v`
+- Python bytecode compilation of the integration.
+- HACS validation using `hacs/action@main`.
+- Home Assistant Hassfest validation using `home-assistant/actions/hassfest@master`.
 
-For local verification, run:
+The tag-publishing workflow also checks version/tag agreement, runs packaging, unit tests and Python compilation before creating the full GitHub Release. The included publishing script waits for the main-branch validation run to pass **before** pushing `v1.4.0`.
+
+## Hardware observations
+
+- **Vivax/Midea `7579` and Allone Pro:** The maintainer tested the beta's generated Midea 48-bit mode, temperature and fan commands, and physically confirmed the alternative Kaysun/Midea vertical swing toggle after the standard Midea variant failed. The stable release preserves that packet. State remains assumed.
+- **Daikin `10502` / Allone Pro and BAXI `7404` / Magic Cube:** The contributor of merged PR #5 reported physical response on the experimental integration. This is distinct from an independent physical test of every feature of the released source tree.
+- The existing cloud login, TV control and RF blinds were exercised during previous maintainer testing; v1.4.0 does not change the original binary transport or TLS bundle.
+
+## Scope and limitations
+
+No offline test proves that a specific physical appliance accepted a new IR command. Home Assistant does not receive actual AC operating state from ORVIBO. Vertical swing for Vivax is a relative toggle; first action after external changes can be ambiguous.
+
+The bundled ORVIBO client certificate/key and pinned legacy CA are unchanged from v1.3.2 and were previously tested for certificate chain, DNS hostname and rejected-login behavior. No TLS-verification bypass has been introduced.
+
+If the validation workflow reports a failure or HACS/Hassfest incompatibility, **do not publish the release tag** until resolved.
+
+## Local checks
 
 ```bash
 python3 -m pip install pycryptodome==3.23.0
@@ -20,32 +35,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q custom_components
 ```
 
-The packaging and reviewer checks are static. The security tests exercise the
-actual binary client against a local TLS server with temporary certificates:
-the legacy non-critical CA extension works, while a wrong hostname, an
-untrusted certificate chain, and a changed pinned CA fail. Listener tests
-verify that login rejection ends retries and network failures back off from
-5 to 300 seconds. OpenSSL is required to generate the temporary test certificates.
-
-These tests do **not** exercise Home Assistant against a live ORVIBO cloud
-account, test actual RF blind commands, or validate real-world device behavior.
-
-## Historical runtime tests
-
-The integration README previously stated that 51 runtime tests passed against
-Home Assistant 2026.10.2. That test suite is not included in the current public
-GitHub tree; this release does not claim to have reproduced those results.
-
-## Sensitive data
-
-Never disclose ORVIBO account credentials, authentication tokens, personally
-identifying data or private device identifiers in public GitHub reports. Redact
-logs and diagnostics before sharing. The existing bundled ORVIBO client TLS
-credential files are unchanged in this packaging update and should be assessed
-separately for suitability of public distribution.
-
-## v1.3.2 review evidence
-
-The maintainer has reported that open/close/stop controls work using the locally tested v1.3.2 build with the legacy ORVIBO CA chain pinned and hostname verification enabled. This is real-device user validation; GitHub Actions cannot authenticate to their personal cloud account. Legacy CA trust is supported by two independent integration projects, not a manufacturer-authenticated statement.
-
-The CA has a non-critical Basic Constraints extension rejected by OpenSSL strict X.509 validation, so the binary socket clears only `VERIFY_X509_STRICT`. Signature chain validation, certificate validity checks and hostname verification remain mandatory. No insecure fallback is provided.
+These commands require a Python interpreter compatible with the integration and OpenSSL for locally generated TLS test certificates.
