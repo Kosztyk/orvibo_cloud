@@ -41,7 +41,7 @@ def inspect_repository(root: Path = ROOT) -> list[str]:
             if manifest.get("domain") != DOMAIN:
                 errors.append("Manifest domain does not match integration directory")
             if not re.fullmatch(r"\d+\.\d+\.\d+", str(manifest.get("version", ""))):
-                errors.append("Manifest version must be x.y.z")
+                errors.append("Stable-release manifest version must be x.y.z")
             if not manifest.get("codeowners"):
                 errors.append("Manifest must have a codeowner")
             expected_order = ["domain", "name"] + sorted(
@@ -51,6 +51,14 @@ def inspect_repository(root: Path = ROOT) -> list[str]:
                 errors.append("Manifest keys must be ordered domain, name, then alphabetical")
         except (ValueError, UnicodeError) as err:
             errors.append(f"Invalid manifest JSON: {err}")
+
+    # HACS and the repository expose the same README. Keep the bundled
+    # integration copy synchronized with the top-level release documentation.
+    copied_readme = root / "custom_components/orvibo_cloud/README.md"
+    top_level_readme = root / "README.md"
+    if copied_readme.is_file() and top_level_readme.is_file():
+        if copied_readme.read_bytes() != top_level_readme.read_bytes():
+            errors.append("Bundled integration README differs from root README")
 
     if hacs_path.is_file():
         try:

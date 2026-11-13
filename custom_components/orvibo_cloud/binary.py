@@ -20,7 +20,7 @@ import zlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
-from .control import STORED_AC_OFF_ORDER, OrviboInfrared, is_tv_button_order
+from .control import OrviboInfrared, is_tv_button_order
 from .protocol import OrviboDevice, extract_devices
 
 _LOGGER = logging.getLogger(__name__)
@@ -647,8 +647,8 @@ class OrviboBinaryClient:
         )
         if properties is not None:
             payload["properties"] = dict(properties)
-        if is_tv_button_order(order) or order == STORED_AC_OFF_ORDER:
-            # The stored IR envelope derived from the app's TV button path uses a key
+        if is_tv_button_order(order):
+            # IrButton -> control.a.irControl -> core.c.q0 uses a stored key
             # order, zero values/frequency/pulse count, and no pulse data.
             # Android JSONObject.put(name, null) omits that field.
             payload.pop("groupId", None)

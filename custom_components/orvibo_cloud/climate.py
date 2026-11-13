@@ -1,4 +1,4 @@
-"""Home Assistant climate entities for explicitly recognized IR profiles."""
+"""ORVIBO virtual climate controls for exactly recognized HomeMate IR profiles."""
 
 from __future__ import annotations
 
@@ -19,26 +19,27 @@ from .coordinator import OrviboCloudCoordinator
 from .entity import OrviboCloudDeviceEntity
 from .selection import device_is_selected
 
-
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
+    """Register only selected remotes with exact cloud profile matches; send no IR."""
+    coordinator: OrviboCloudCoordinator = hass.data[DOMAIN][entry.entry_id]
+    entities: list[ClimateEntity] = [
         OrviboClimate(coordinator, device.uid, profile)
         for device in coordinator.data.devices
         if device_is_selected(entry.options, device.uid)
         and (profile := ac_profile(device)) is not None
-    )
+    ]
+
+    async_add_entities(entities)
 
 
 class OrviboClimate(OrviboCloudDeviceEntity, ClimateEntity):
-    """Expose only the capabilities listed by the matched profile."""
+    """Expose last acknowledged requested state without claiming physical feedback."""
 
     _attr_name = None
     _attr_assumed_state = True
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _enable_turn_on_off_backwards_compatibility = False
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
 
     def __init__(
         self, coordinator: OrviboCloudCoordinator, device_id: str, profile: ACProfile
@@ -84,7 +85,7 @@ class OrviboClimate(OrviboCloudDeviceEntity, ClimateEntity):
         return HVACMode(self._state.mode) if self._state.mode else None
 
     @property
-    def target_temperature(self) -> int | None:
+    def native_target_temperature(self) -> int | None:
         return self._state.temperature
 
     @property
@@ -95,22 +96,15 @@ class OrviboClimate(OrviboCloudDeviceEntity, ClimateEntity):
     def swing_mode(self) -> str | None:
         return self._state.swing
 
-    async def async_set_swing_mode(self, swing_mode: str) -> None:
-        await self._async_change(swing=swing_mode)
-
     @property
     def preset_mode(self) -> str | None:
         return self._state.preset
-
-    async def async_set_preset_mode(self, preset_mode: str) -> None:
-        await self._async_change(preset=preset_mode)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         await self._async_change(mode=str(hvac_mode))
 
     async def async_turn_on(self) -> None:
-        mode = self._profile.turn_on_mode
-        if mode is None:
+        if self._profile.turn_on_mode is None:
             raise HomeAssistantError("This AC profile does not support turning on")
         await self._async_change(turn_on=True)
 
@@ -129,8 +123,14 @@ class OrviboClimate(OrviboCloudDeviceEntity, ClimateEntity):
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         await self._async_change(fan=fan_mode)
 
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        await self._async_change(swing=swing_mode)
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        await self._async_change(preset=preset_mode)
+
     async def _async_change(self, *, turn_on: bool = False, **changes: Any) -> None:
-        # Share the transport lock with TV and derive the state after acquiring it.
+        """Validate and encode under shared IR/TV lock; update only after ACK."""
         async with self.coordinator.tv_control_lock:
             device = self._device
             if device is None or not self.available:
@@ -149,6 +149,31 @@ class OrviboClimate(OrviboCloudDeviceEntity, ClimateEntity):
                 raise HomeAssistantError("Select an active AC mode before changing settings")
             if self._profile.remember_settings and candidate.mode not in (None, "off"):
                 candidate = replace(candidate, previous_mode=candidate.mode)
+            # Standard Midea swing is a *toggle*, not an absolute state bit.
+            # An explicit swing-only request transmits only the toggle packet.
+            # Never silently send two potentially partial commands for a single
+            # operation. No state change occurs if cloud ACK fails.
+            toggle_encoder = self._profile.swing_toggle_encoder
+            swing_changed = "swing" in changes and candidate.swing != self._state.swing
+            if toggle_encoder is not None and "swing" in changes:
+                if len(changes) != 1:
+                    raise HomeAssistantError(
+                        "Change the Midea swing separately from mode and temperature"
+                    )
+                if candidate.mode in (None, "off"):
+                    raise HomeAssistantError("Turn the AC on before changing swing")
+                if self._state.swing is None and candidate.swing == "off":
+                    raise HomeAssistantError(
+                        "Swing position is unknown; select vertical and verify the "
+                        "physical movement before requesting off"
+                    )
+                if candidate.swing not in self._profile.swings:
+                    raise HomeAssistantError("Unsupported swing mode")
+                if swing_changed:
+                    await self._backend.async_send(device, toggle_encoder())
+                self._state = candidate
+                self.async_write_ha_state()
+                return
             try:
                 command = self._profile.command(
                     replace(candidate, mode="off") if local_settings else candidate

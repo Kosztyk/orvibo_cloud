@@ -9,9 +9,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .protocol import OrviboDevice
 
-# Historical HomeMate virtual AC shutdown key, used by the standalone trial.
-STORED_AC_OFF_ORDER = "311004"
-
 _TUNABLE_LIGHT_SUB_DEVICE_TYPES = {"4", "6", "13"}
 _PROPERTY_LIGHT_MODELS = {
     "294339fdc9b04613bb6cf1569305b78c",

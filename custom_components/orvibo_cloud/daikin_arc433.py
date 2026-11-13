@@ -1,10 +1,8 @@
-"""Experimental ARC433A87-compatible candidate based on IRremoteESP8266 DAIKIN.
+"""Daikin ARC433A87-compatible IR waveform encoder.
 
-The DAIKIN 280-bit OFF signal was physically confirmed with Sala Matex.
-Ported from the local v0.6 patch for use in the shared climate integration.
-No network or Home Assistant dependencies.
+Protocol-informed implementation using a verified 280-bit OFF reference.
+See THIRD_PARTY_NOTICES.md in the repository for protocol research references.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,9 +21,12 @@ class Signal:
     frequency: int = FREQUENCY_HZ
 
 
-def daikin_signal(*, power: bool, temperature: int = 23, mode: str = "heat",
-                  fan: str = "auto", eco: bool = False, comfort: bool = False,
-                  swing_v: bool = False, swing_h: bool = False) -> Signal:
+def daikin_signal(
+    *, power: bool, temperature: int = 23, mode: str = "heat",
+    fan: str = "auto", eco: bool = False, comfort: bool = False,
+    swing_v: bool = False, swing_h: bool = False,
+) -> Signal:
+    """Serialize a Daikin three-section IR frame; no network effects."""
     if type(power) is not bool:
         raise ValueError("power must be a bool")
     if type(temperature) is not int or not 16 <= temperature <= 30:
@@ -34,15 +35,16 @@ def daikin_signal(*, power: bool, temperature: int = 23, mode: str = "heat",
         raise ValueError("unsupported mode or fan setting")
     if any(type(flag) is not bool for flag in (eco, comfort, swing_v, swing_h)):
         raise ValueError("eco, comfort and swing settings must be boolean")
+
     state = bytearray(35)
-    defaults = {
+    reference_bytes = {
         0: 0x11, 1: 0xDA, 2: 0x27, 4: 0xC5,
         8: 0x11, 9: 0xDA, 10: 0x27, 12: 0x42,
         16: 0x11, 17: 0xDA, 18: 0x27, 21: 0x49,
         22: 0x1E, 24: 0xB0, 27: 0x06, 28: 0x60, 31: 0xC0,
     }
-    for i, val in defaults.items():
-        state[i] = val
+    for index, value in reference_bytes.items():
+        state[index] = value
     state[6] = (state[6] & ~0x10) | (0x10 if comfort else 0)
     state[21] = (state[21] & ~0x71) | (int(power) | (HVAC_CODES[mode] << 4))
     state[22] = temperature * 2
@@ -50,9 +52,8 @@ def daikin_signal(*, power: bool, temperature: int = 23, mode: str = "heat",
     state[25] = 0x0F if swing_h else 0
     state[32] = (state[32] & ~0x04) | (0x04 if eco else 0)
     for start, end in ((0, 8), (8, 16), (16, 35)):
-        state[end - 1] = sum(state[start : end - 1]) & 0xFF
+        state[end - 1] = sum(state[start:end - 1]) & 0xFF
 
-    # Serialize exactly as the verified IRDaikinESP sendDaikin() method.
     pulses = []
     for _ in range(5):
         pulses.extend((428, 428))
@@ -69,7 +70,7 @@ def daikin_signal(*, power: bool, temperature: int = 23, mode: str = "heat",
 
 
 def self_check() -> None:
-    """The previously successful OFF signal must be bit-for-bit unchanged."""
+    """Abort at import if the previously hardware-confirmed OFF frame changes."""
     result = daikin_signal(power=False)
     sha = hashlib.sha256(",".join(map(str, result.pulses)).encode()).hexdigest()
     if sha != OFF_23_HEAT_SHA256:
