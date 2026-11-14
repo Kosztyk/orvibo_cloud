@@ -161,12 +161,24 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(heat.infrared.pulses), 212)
         self.assertNotEqual(heat.infrared.pulses, cool.infrared.pulses)
 
-    def test_no_horizontal_only_in_public_climate(self):
-        p = profiles.IR_PROFILES[("5","2","7404")]
-        self.assertNotIn("horizontal", p.swings)
-        with self.assertRaisesRegex(ValueError,"swing"):
-            p.command(profiles.ACState(mode="cool",temperature=19,fan="low",swing="horizontal"))
-        self.assertIn("both",p.swings)
+    def test_baxi_all_four_swing_modes_generate_distinct_frames(self):
+        p = profiles.IR_PROFILES[("5", "2", "7404")]
+        self.assertEqual(p.swings, ("off", "vertical", "horizontal", "both"))
+        signals = {}
+        for mode in p.swings:
+            with self.subTest(swing=mode):
+                command = p.command(profiles.ACState(
+                    mode="cool", temperature=19, fan="low", swing=mode,
+                ))
+                self.assertEqual(command.order, "ir control")
+                self.assertEqual(command.infrared.frequency, 38000)
+                self.assertEqual(len(command.infrared.pulses), 212)
+                signals[mode] = command.infrared.pulses
+        self.assertEqual(len(set(signals.values())), 4)
+        # Horizontal-only must differ from BOTH and OFF, not silently alias.
+        self.assertNotEqual(signals["horizontal"], signals["both"])
+        self.assertNotEqual(signals["horizontal"], signals["off"])
+        self.assertNotEqual(signals["vertical"], signals["both"])
 
     def test_invalid_controls_fail(self):
         p=profiles.IR_PROFILES[("5","2","7404")]
@@ -239,18 +251,25 @@ class ClimateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.send.await_args.args[-1].pulses),212)
         self.assertEqual(self.send.await_count,2)
 
-    async def test_baxi_rejects_unverified_swing(self):
+    async def test_baxi_exposes_horizontal_swing_without_extra_commands(self):
         d=replace(self.d,ir_profile_id="7404",online=True)
         h=replace(self.h,device_type="30",online=True)
         self.coord.data.devices=(d,h)
         entities=[]
         await climate.async_setup_entry(self.hass,self.entry,entities.extend)
         entity,=entities
-        self.assertNotIn("horizontal",entity._attr_swing_modes)
+        self.assertEqual(entity._attr_swing_modes, ["off", "vertical", "horizontal", "both"])
+        self.send.assert_not_awaited()  # No IR during discovery/setup.
         await entity.async_turn_on()
-        with self.assertRaises(HomeAssistantError):
-            await entity.async_set_swing_mode("horizontal")
         self.assertEqual(self.send.await_count,1)
+        await entity.async_set_swing_mode("horizontal")
+        self.assertEqual(entity.swing_mode,"horizontal")
+        self.assertEqual(self.send.await_count,2)  # Exactly one new IR request.
+        self.assertEqual(self.send.await_args.args[-1].frequency, 38000)
+        self.assertEqual(len(self.send.await_args.args[-1].pulses),212)
+        await entity.async_set_swing_mode("both")
+        self.assertEqual(entity.swing_mode,"both")
+        self.assertEqual(self.send.await_count,3)
 
     async def test_failure_preserves_unknown_state(self):
         self.send.side_effect=OrviboBinaryError("private secret")

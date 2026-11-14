@@ -24,6 +24,7 @@ from .coordinator import OrviboCloudCoordinator
 from .selection import (
     configured_device_areas,
     device_is_selected,
+    is_obsolete_ls175_entity,
     selected_device_ids,
 )
 
@@ -42,6 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     _async_register_devices(hass, entry, coordinator)
+    _async_cleanup_obsolete_ls175_entities(hass, entry)
     entry.async_on_unload(
         coordinator.async_add_listener(
             lambda: _async_register_devices(hass, entry, coordinator)
@@ -157,3 +159,18 @@ def _async_register_devices(
                 registry_device.id,
                 area_id=device_areas[device.uid],
             )
+
+
+def _async_cleanup_obsolete_ls175_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Prune only the discontinued LS175 beta remote and unmapped buttons.
+
+    This avoids leaving `no longer provided` entries on an upgrade. Device
+    registry entries, all TV remotes and the six verified LS175 button unique
+    IDs are preserved. No commands are sent or cloud settings are changed.
+    """
+    registry = er.async_get(hass)
+    for entity in tuple(er.async_entries_for_config_entry(registry, entry.entry_id)):
+        if is_obsolete_ls175_entity(
+            entity.domain, entity.platform, entity.unique_id
+        ):
+            registry.async_remove(entity.entity_id)

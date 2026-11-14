@@ -1,47 +1,54 @@
-# Publishing ORVIBO Cloud v1.4.0
+# Publishing ORVIBO Cloud v1.4.1
 
-The [ORVIBO Cloud HACS default-catalog PR #12441](https://github.com/hacs/default/pull/12441) has been merged. You do **not** need to submit a duplicate HACS/default PR for v1.4.0; HACS discovers official GitHub releases.
+The repository is already in the HACS default catalog. Publishing a new GitHub release does **not** require another `hacs/default` pull request. The stable version is **v1.4.1**, based on the previously published v1.4.0 commit `3a26fb1b30696e2d2ba41787a347c80f69a3f28c`.
 
-## Automated publisher
+## Requirements
 
-The complete production source archive contains `scripts/publish_v1.4.0.sh`. On a Mac/Linux workstation with Git, Python 3.13+, rsync and an authenticated GitHub CLI (`gh`):
+- Git, `rsync`, **Python 3.13+** with `venv` and `pip`, and [GitHub CLI (`gh`)](https://cli.github.com/).
+- An authenticated GitHub account with permission to push `Kosztyk/orvibo_cloud` and create tags/releases. Authenticate using `gh auth login` and confirm `gh auth status`.
+- Network access to install the packages listed in `requirements-test.txt` (`aiohttp`, `pycryptodome`) and to access GitHub.
+- Working GitHub Actions permissions for HACS, Hassfest and release publication.
+
+## Step 1: extract the full source
 
 ```bash
-unzip orvibo_cloud_v1.4.0_after_PR5_merge_full_source.zip
-cd orvibo_cloud_v1.4.0
-bash scripts/publish_v1.4.0.sh --publish
+unzip orvibo_cloud_v1.4.1_full_source.zip
+cd orvibo_cloud_v1.4.1
 ```
 
-The script will:
+## Step 2: run the **non-publishing** validation
 
-1. Reject a missing GitHub login, an existing `v1.4.0` tag/release, or a changed `main` branch (the archive is pinned to the reviewed PR #5 merge commit `a3b93d1`).
-2. Clone `Kosztyk/orvibo_cloud` in a temporary directory and synchronize the production source tree, deleting obsolete beta-only files **without deleting the cloned `.git` metadata**.
-3. Check the production manifest, run static checks, compile Python, install `pycryptodome==3.23.0` into a temporary virtualenv and run all regression tests. Verify that binary/TLS-sensitive files are unchanged from the baseline.
-4. Commit and push the source to `main`.
-5. Wait for the `Validate ORVIBO Cloud` GitHub Actions run to pass (packaging, security tests, HACS and Hassfest).
-6. Create and push the annotated tag `v1.4.0`, causing `.github/workflows/release.yml` to validate and create the GitHub Release using `RELEASE_NOTES_1.4.0.md`.
-7. Wait for that workflow, verify the published release and print its URL.
+```bash
+bash scripts/publish_v1.4.1.sh --check
+```
 
-**Nothing is changed on GitHub merely by extracting the archive.** The `--publish` flag executes the external operations. If the run stops after a failed GitHub Actions check, do not tag manually; inspect and fix the workflow first.
+This performs all static/HACS package checks, installs test dependencies in a temporary Python virtual environment, runs the complete unittest/security suite, compiles Python code and builds release archives. It **never** pushes or tags anything, and it does not alter your Home Assistant installation.
 
-## Manual publication alternative
+## Step 3: publish only after you review the package
 
-If you prefer publishing by hand, ensure GitHub Actions **Validate ORVIBO Cloud** passed on `main`, then create/push an annotated tag `v1.4.0` targeting that validated commit. The tag-driven release workflow publishes the matching GitHub Release. Do not force-move release tags or publish from an unvalidated commit.
+```bash
+bash scripts/publish_v1.4.1.sh --publish
+```
 
-## Attribution and PR status
+The publisher fails closed if `main` has changed from the exact reviewed v1.4.0 commit, if the v1.4.1 tag or release exists, if the release manifest/docs are inconsistent, if the TLS/transport/Vivax baseline files changed, or if local tests fail. It:
 
-PR #5 by @matexdj **was merged** into `main` at commit `a3b93d1a521cad6eb8dce5c3df338e14d4f17ea7` before v1.4.0 was published. The release builds on the merged contribution and the maintainer-tested beta. Its publishing script pins that merge commit as the reviewed baseline and intentionally uses the validated v1.3.2 `binary.py`/`control.py` and TLS files instead of the PR's unverified stored-AC-OFF envelope.
+1. Validates the full production source including the TLS test module (the test dependency is installed beforehand).
+2. Clones `Kosztyk/orvibo_cloud` into a temporary directory; refuses any unexpected main-branch change and displays the staged diff summary.
+3. Commits and **pushes to `main`** using a regular non-force push.
+4. Waits for the GitHub `Validate ORVIBO Cloud` workflow (unit/security, HACS and Hassfest). If CI fails, **stops without tagging**; the source commit may already have been pushed, so fix the failure rather than rerunning blindly.
+5. Creates and pushes an annotated `v1.4.1` tag on the validated commit.
+6. Waits for `.github/workflows/release.yml` to create the **non-prerelease GitHub Release** using `RELEASE_NOTES_1.4.1.md`.
+7. Uploads `orvibo_cloud_v1.4.1_ha_install.zip` and `orvibo_cloud_v1.4.1_full_source.zip` as release assets and displays the release URL.
 
-### v1.4.0 release-package correction (13 November 2026)
+The tag-workflow may finish before the asset upload, in which case the release initially contains GitHub's automatic source archives; the publisher then attaches the two convenient ZIP files. The configured `hacs.json` uses normal source-tag installation, not `zip_release: true`.
 
-The post-PR-#5 source package now synchronizes the root `README.md` and
-`custom_components/orvibo_cloud/README.md` byte-for-byte. The publishing
-script rejects a mismatched README before cloning or modifying GitHub.
-Certificate-fixture generation in `tests/test_binary_security.py` uses an
-OpenSSL configuration file for better macOS/LibreSSL portability while
-retaining the original security assertions. These changes affect release
-packaging and offline tests only; the runtime integration and IR encoder
-are unchanged.
+**The archive itself does not publish anything.** Merely extracting it or running `--check` cannot change GitHub. Only `--publish` initiates publication.
 
-If a full-suite error persists, retain the traceback above `FAILED` as
-well as the summary; the summary alone does not identify the exception.
+## Important release limitations
+
+- Blaupunkt Power is an **optimistic switch** using a relative IR toggle, not actual feedback; external remote actions can desynchronize it.
+- BAXI Horizontal was verified physically in Carlos's experimental fork and has distinct offline signal vectors, but its exact v1.4.1 runtime should be retested physically when possible.
+- Cloud-reported hub online status can remain stale for a while after unplugging, even while the ORVIBO cloud connection sensor remains On. The maintainer verified recovery without restarting HA on 2026-11-14.
+- `daikin_arc433.py` carries **LGPL-2.1-only** source attribution, which is separate from the MIT license for other files.
+
+See `RELEASE_NOTES_1.4.1.md`, `VALIDATION.md`, `THIRD_PARTY_NOTICES.md` and `PROVENANCE_AUDIT.md`.

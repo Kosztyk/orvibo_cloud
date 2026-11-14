@@ -1,3 +1,12 @@
+# SPDX-License-Identifier: LGPL-2.1-only
+# Daikin IR state layout and reset-byte constants are traceable to
+# IRremoteESP8266 src/ir_Daikin.cpp (IRDaikinESP::stateReset et al.).
+# Upstream file authors: Copyright 2016 sillyfrog; Copyright 2017 sillyfrog,
+# crankyoldgit; Copyright 2018-2022 crankyoldgit; Copyright 2019 pasna.
+# Python climate implementation originated in the proposal by @matexdj
+# (Kosztyk/orvibo_cloud PR #5), subsequently revised by its maintainers.
+# Treat this file as LGPL-2.1-covered rather than claiming independent origin.
+# Full license: LICENSES/LGPL-2.1.txt and THIRD_PARTY_NOTICES.md.
 """Daikin ARC433A87-compatible IR waveform encoder.
 
 Protocol-informed implementation using a verified 280-bit OFF reference.
