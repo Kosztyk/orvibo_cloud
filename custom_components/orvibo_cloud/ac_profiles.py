@@ -223,8 +223,9 @@ IR_PROFILES = {
         modes=("off", "heat", "cool"), encode=_baxi_7404_command,
         hub_type="30", turn_on_mode="heat", temperatures=range(19, 24),
         fans=("low", "medium", "high"),
-        # Horizontal-only remains excluded until physically confirmed on BAXI.
-        swings=("off", "vertical", "both"),
+        # Horizontal-only was physically exercised on BAXI in the contributor's
+        # experimental fork; the public profile exposes horizontal-only swing.
+        swings=("off", "vertical", "horizontal", "both"),
         presets=("none", "turbo", "silence", "ifeel", "display"),
         momentary_presets=("display",), mode_defaults=_BAXI_MODE_DEFAULTS,
     ),

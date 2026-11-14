@@ -40,8 +40,8 @@ def inspect_repository(root: Path = ROOT) -> list[str]:
                 errors.append(f"Manifest missing fields: {', '.join(sorted(missing))}")
             if manifest.get("domain") != DOMAIN:
                 errors.append("Manifest domain does not match integration directory")
-            if not re.fullmatch(r"\d+\.\d+\.\d+", str(manifest.get("version", ""))):
-                errors.append("Stable-release manifest version must be x.y.z")
+            if not re.fullmatch(r"\d+\.\d+\.\d+(?:b\d+)?", str(manifest.get("version", ""))):
+                errors.append("Manifest version must be x.y.z or x.y.zbN for local beta")
             if not manifest.get("codeowners"):
                 errors.append("Manifest must have a codeowner")
             expected_order = ["domain", "name"] + sorted(

@@ -42,12 +42,19 @@ from .const import (
     ORVIBO_HOSTS,
 )
 from .control import is_rf_curtain
+from .blaupunkt_ls175 import is_ls175_test_target
 from .protocol import OrviboDevice, password_hash
 from .selection import (
     CONF_DEVICE_AREAS,
     CONF_SELECTED_DEVICE_IDS,
     configured_device_areas,
+    device_is_selected,
     selected_device_ids,
+    CONF_SPEAKER_IR_MODELS,
+    SPEAKER_MODEL_NONE,
+    SPEAKER_MODEL_BLAUPUNKT_LS175,
+    SUPPORTED_SPEAKER_IR_MODELS,
+    configured_speaker_ir_models,
 )
 
 _OTHER_DEVICE_CATEGORY = "Other devices"
@@ -159,9 +166,11 @@ def _device_schema(
 
 
 def _area_schema(
-    default_area_id: str | None, rf_options: RFBlindOptions | None = None
+    default_area_id: str | None,
+    rf_options: RFBlindOptions | None = None,
+    speaker_ir_model: str | None = None,
 ) -> vol.Schema:
-    """Build device settings, adding state options only for RF blinds."""
+    """Build per-device area, optional RF-blind, and opt-in speaker settings."""
 
     key = (
         vol.Optional(ATTR_AREA_ID, default=default_area_id)
@@ -186,6 +195,21 @@ def _area_schema(
                     )
                 ),
             }
+        )
+    if speaker_ir_model is not None:
+        fields[vol.Required("speaker_ir_model", default=speaker_ir_model)] = (
+            selector.SelectSelector(selector.SelectSelectorConfig(
+                options=[
+                    selector.SelectOptionDict(
+                        value=SPEAKER_MODEL_NONE, label="None (no speaker IR commands)"
+                    ),
+                    selector.SelectOptionDict(
+                        value=SPEAKER_MODEL_BLAUPUNKT_LS175,
+                        label="Blaupunkt LS 175 (experimental, RCoid NEC)",
+                    ),
+                ],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            ))
         )
     return vol.Schema(fields)
 
@@ -545,13 +569,15 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
         self._raw_event_capture = False
         self._cloud_host: str | None = None
         self._tv_profile = "lg"
+        self._speaker_ir_models: dict[str, str] = {}
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Validate a server change before selecting devices on that server."""
+        """Original complete cloud, TV, device, area and RF-blind options wizard."""
 
+        self._speaker_ir_models = configured_speaker_ir_models(self.config_entry.options)
         self._device_areas = configured_device_areas(self.config_entry.options)
         self._rf_options = configured_rf_blind_options(self.config_entry.options)
         current_host = self.config_entry.data[CONF_HOST]
@@ -706,6 +732,17 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
             except vol.Invalid:
                 errors[CONF_STATE_EXPIRY] = "invalid_state_expiry"
                 user_input = None
+        if user_input is not None and is_ls175_test_target(device, self._devices):
+            speaker_model = user_input.get("speaker_ir_model", SPEAKER_MODEL_NONE)
+            if not isinstance(speaker_model, str) or speaker_model not in (
+                {SPEAKER_MODEL_NONE, *SUPPORTED_SPEAKER_IR_MODELS}
+            ):
+                errors["speaker_ir_model"] = "invalid_speaker_ir_model"
+                user_input = None
+            elif speaker_model == SPEAKER_MODEL_NONE:
+                self._speaker_ir_models.pop(device.uid, None)
+            else:
+                self._speaker_ir_models[device.uid] = speaker_model
         if user_input is not None:
             self._device_areas[device.uid] = user_input.get(ATTR_AREA_ID)
             self._area_index += 1
@@ -725,6 +762,12 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                         item.uid: self._rf_options.get(item.uid, RFBlindOptions()).as_dict()
                         for item in devices
                         if is_rf_curtain(item, self._devices)
+                    },
+                    CONF_SPEAKER_IR_MODELS: {
+                        item.uid: self._speaker_ir_models[item.uid]
+                        for item in devices
+                        if item.uid in self._speaker_ir_models
+                        and is_ls175_test_target(item, self._devices)
                     },
                 }
                 # Only explicit changes in Options Flow update registry areas.
@@ -769,6 +812,11 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                 self._rf_options.get(device.uid, RFBlindOptions())
                 if is_rf_curtain(device, self._devices)
                 else None,
+                (
+                    self._speaker_ir_models.get(device.uid, SPEAKER_MODEL_NONE)
+                    if is_ls175_test_target(device, self._devices)
+                    else None
+                ),
             ),
             errors=errors,
             description_placeholders={
@@ -777,6 +825,12 @@ class OrviboCloudOptionsFlow(config_entries.OptionsFlow):
                 "position": str(self._area_index + 1),
                 "total": str(len(devices)),
                 "rf_note": _rf_settings_note(device, self._devices),
+                "speaker_note": (
+                    "Choose Blaupunkt LS 175 only if this virtual speaker is "
+                    "intended to control an LS 175 soundbar; the raw IR route "
+                    "is experimental. Choose None to expose no LS175 controls."
+                    if is_ls175_test_target(device, self._devices) else ""
+                ),
             },
         )
 

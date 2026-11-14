@@ -1,15 +1,65 @@
-# Third-party protocol research and acknowledgements
+# Third-party protocol research, source provenance and licenses (v1.4.1)
 
-ORVIBO Cloud is based on the original `maycode0-0/orvibo-cloud` integration. Its existing MIT license and upstream notices are retained in `LICENSE` and `custom_components/orvibo_cloud/LICENSE`.
+ORVIBO Cloud is based on `maycode0-0/orvibo-cloud`; its MIT license is retained
+for the original integration and other MIT-covered files. **This does not mean
+all files in the repository are MIT-licensed.** File-specific licenses apply.
 
 ## Climate contributor
 
-The Daikin and BAXI climate integration work was proposed by **@matexdj** in [Kosztyk/orvibo_cloud PR #5](https://github.com/Kosztyk/orvibo_cloud/pull/5). This v1.4.0 release incorporates a revised implementation of that proposal, Home Assistant compatibility work and an independently developed Vivax/Midea path. Thank you to the contributor for the hardware testing and protocol work.
+Daikin and BAXI climate support was proposed by **Carlos (@matexdj)** in
+[PR #5](https://github.com/Kosztyk/orvibo_cloud/pull/5), with an experimental
+Daikin/BAXI fork predating its merge. Subsequent work revised the integration
+and added a separately tested Vivax/Midea protocol path. We retain his credit
+for the climate code, device protocol research and physical validation.
 
-## IRremoteESP8266 reference material
+## Daikin source attribution and license treatment
 
-The Daikin ARC433-family, Electra/AUX-family and Midea 48-bit IR frame layouts were studied with reference to the [IRremoteESP8266 project](https://github.com/crankyoldgit/IRremoteESP8266), including `ir_Daikin.cpp`, `ir_Electra.h` and `ir_Midea.cpp` / `ir_Midea.h`. The library is published under the [GNU Lesser General Public License v2.1](https://github.com/crankyoldgit/IRremoteESP8266/blob/master/LICENSE.txt); its authors retain their rights.
+**Reviewed reference:** [IRremoteESP8266 `src/ir_Daikin.cpp`](https://github.com/crankyoldgit/IRremoteESP8266/blob/master/src/ir_Daikin.cpp),
+particularly `IRDaikinESP::stateReset`, `checksum`, power/mode/fan/swing
+setters and the multi-section Daikin send layout. The existing Python file
+`custom_components/orvibo_cloud/daikin_arc433.py` reproduces the upstream
+35-byte initial-state constants and related protocol fields. This is a more
+specific match than merely consulting an IR protocol specification.
 
-This repository does not bundle or dynamically link the IRremoteESP8266 compiled library. The Python implementations were written using published protocol descriptions and signal/fixture comparisons. This attribution is not a substitute for a full third-party intellectual-property review if adapted code is later added; do not assume the existing MIT license relicenses third-party LGPL work.
+We **cannot establish independent authorship** of those constants/field
+translations from commit chronology alone. We therefore conservatively treat
+`daikin_arc433.py` as an LGPL-2.1-covered adaptation, mark it with
+`SPDX-License-Identifier: LGPL-2.1-only`, retain the upstream authors' notices,
+and include the complete license at
+[`LICENSES/LGPL-2.1.txt`](LICENSES/LGPL-2.1.txt). The matching integration
+installation includes `custom_components/orvibo_cloud/LICENSES/LGPL-2.1.txt`.
 
-The documented `0xA202FFFFFF7E` code is a vertical swing toggle only for the tested Vivax/Kaysun-compatible profile; on other Midea variants it may represent an Econo command. Do not apply it universally.
+Upstream `ir_Daikin.cpp` lists copyright holders **sillyfrog**,
+**crankyoldgit**, and **pasna** (for other Daikin protocol families).
+Original upstream library: [IRremoteESP8266](https://github.com/crankyoldgit/IRremoteESP8266),
+licensed under [GNU LGPL v2.1](https://github.com/crankyoldgit/IRremoteESP8266/blob/master/LICENSE.txt).
+The MIT license at the repository root does **not** supersede the license of
+this file or of copyrightable upstream adaptations.
+
+## BAXI/Electra and Vivax/Midea references
+
+The BAXI/Electra 13-byte frame format, field behavior and frame checksum were
+studied with reference to
+[`src/ir_Electra.cpp`](https://github.com/crankyoldgit/IRremoteESP8266/blob/master/src/ir_Electra.cpp),
+which credits **David Conran** and earlier AUX/heatpump research.
+The validated BAXI OFF and Heat-on (22°C, low-fan) 212-duration / 38kHz
+reference signals originate from HomeMate scenes. The maintainer/contributor
+protocol work and upstream references are attributed; a line-by-line source
+origin for every field transformation is not independently proved.
+
+The Vivax/Midea 48-bit packet encoder drew on the publicly documented
+[`src/ir_Midea.cpp`](https://github.com/crankyoldgit/IRremoteESP8266/blob/master/src/ir_Midea.cpp)
+and [`src/ir_Midea.h`](https://github.com/crankyoldgit/IRremoteESP8266/blob/master/src/ir_Midea.h)
+protocols and physical testing. The Kaysun `0xA202FFFFFF7E` vertical swing
+code is physically verified only for the tested Vivax/Kaysun-compatible model;
+on other Midea devices it can perform a different function, including Econo.
+
+## Scope and future provenance work
+
+This review establishes matching Daikin reset constants, upstream copyright,
+file-scoped licensing and third-party protocol references. It does **not**
+constitute a definitive copyright clearance or confirm an independent clean-room
+rewrite of all IR encoders. If further copied portions are identified, retain
+upstream notices and apply their applicable license terms. Do not claim
+LGPL-covered code was relicensed under MIT. See `PROVENANCE_AUDIT.md` for the
+technical comparisons.
