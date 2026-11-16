@@ -180,10 +180,90 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotEqual(signals["horizontal"], signals["off"])
         self.assertNotEqual(signals["vertical"], signals["both"])
 
+    @staticmethod
+    def _baxi_frame_from_pulses(pulses):
+        """Decode LSB-first timing independently of the production encoder."""
+        assert len(pulses) == 212
+        assert tuple(pulses[:2]) == (9000, 4500)
+        assert tuple(pulses[-2:]) == (560, 1000)
+        frame = bytearray()
+        for start in range(2, 210, 16):
+            byte = 0
+            for bit in range(8):
+                mark, space = pulses[start + bit * 2:start + bit * 2 + 2]
+                assert mark == 560
+                assert space in (560, 1680)
+                byte |= (space == 1680) << bit
+            frame.append(byte)
+        assert len(frame) == 13
+        return bytes(frame)
+
+    def test_baxi_16_to_32_entire_command_matrix(self):
+        """408 full-state vectors: 2 HVAC * 17 temperatures * 3 fans * 4 swings."""
+        p = profiles.IR_PROFILES[("5", "2", "7404")]
+        self.assertEqual((min(p.temperatures), max(p.temperatures)), (16, 32))
+        self.assertEqual(len(p.temperatures), 17)
+        self.assertEqual(p.modes, ("off", "heat", "cool"))
+        self.assertEqual(p.swings, ("off", "vertical", "horizontal", "both"))
+        count = 0
+        for mode in ("heat", "cool"):
+            for fan in ("low", "medium", "high"):
+                for swing in p.swings:
+                    frames = set()
+                    for temperature in range(16, 33):
+                        with self.subTest(mode=mode, temp=temperature, fan=fan, swing=swing):
+                            command = p.command(profiles.ACState(
+                                mode=mode, temperature=temperature,
+                                fan=fan, swing=swing, preset="none",
+                            ))
+                            self.assertEqual(command.infrared.frequency, 38000)
+                            self.assertEqual(len(command.infrared.pulses), 212)
+                            frame = self._baxi_frame_from_pulses(command.infrared.pulses)
+                            self.assertEqual(frame[0], 0xC3)
+                            self.assertEqual(frame[1] >> 3, temperature - 8)
+                            self.assertEqual(frame[1] & 7, 0 if swing in ("vertical", "both") else 7)
+                            self.assertEqual(bool(frame[2] & 0xE0), swing not in ("horizontal", "both"))
+                            self.assertEqual(frame[12], sum(frame[:12]) & 255)
+                            self.assertEqual(command.order, "ir control")
+                            self.assertEqual(command.value1, 2 if mode == "heat" else 0)
+                            self.assertEqual(command.value3 & 255, ("low", "medium", "high").index(fan) + 1)
+                            self.assertEqual(command.value4, (temperature << 16) | (136 << 8))
+                            frames.add(frame)
+                            count += 1
+                    self.assertEqual(len(frames), 17)
+        self.assertEqual(count, 408)
+
+    def test_baxi_previously_confirmed_commands_unchanged(self):
+        known = {
+            ("heat", 22, "low", "off"): "894d13318cf71f98e29ee97d6d7c0a64d8d41fe8406a3a774d5aa5e6036d6cd4",
+            ("cool", 19, "low", "off"): "466ce8401f47e5b7d1e3f961e3c36df707e18b3da6e624d106e6dd60ba89ee34",
+            ("heat", 23, "high", "both"): "2d090b302cec710ab4ec0dfae18831bc67258a698023cd0fbbe2b087e5fbb9a1",
+            ("cool", 23, "medium", "horizontal"): "1db796b140d0171b5788c84de420762517792e1f44f1068f8d0c20bd4e92296a",
+        }
+        for (mode, temperature, fan, swing), fingerprint in known.items():
+            with self.subTest(mode=mode, temperature=temperature, fan=fan, swing=swing):
+                c = profiles.baxi_7404_candidate(
+                    mode, temperature, fan,
+                    vertical_swing=swing in ("vertical", "both"),
+                    horizontal_swing=swing in ("horizontal", "both"),
+                )
+                actual = hashlib.sha256(",".join(map(str, c.infrared.pulses)).encode()).hexdigest()
+                self.assertEqual(actual, fingerprint)
+
+    def test_baxi_rejects_out_of_range_and_invalid_temperature_types(self):
+        p = profiles.IR_PROFILES[("5", "2", "7404")]
+        for mode in ("heat", "cool"):
+            for invalid in (15, 33, 0, 39, True, False, 21.0, 22.5, "24"):
+                with self.subTest(mode=mode, invalid=invalid):
+                    with self.assertRaises(ValueError):
+                        p.command(profiles.ACState(mode=mode, temperature=invalid))
+                    with self.assertRaises(ValueError):
+                        profiles.baxi_7404_candidate(mode, invalid, "low")
+
     def test_invalid_controls_fail(self):
         p=profiles.IR_PROFILES[("5","2","7404")]
         for state in (profiles.ACState(mode="fan_only"),
-                      profiles.ACState(mode="cool",temperature=25),
+                      profiles.ACState(mode="cool",temperature=33),
                       profiles.ACState(mode="heat",fan="auto")):
             with self.subTest(state=state), self.assertRaises(ValueError):
                 p.command(state)
@@ -270,6 +350,43 @@ class ClimateTests(unittest.IsolatedAsyncioTestCase):
         await entity.async_set_swing_mode("both")
         self.assertEqual(entity.swing_mode,"both")
         self.assertEqual(self.send.await_count,3)
+
+    async def test_baxi_ha_exposes_and_dispatches_extended_temperature(self):
+        d = replace(self.d, ir_profile_id="7404", online=True)
+        h = replace(self.h, device_type="30", online=True)
+        self.coord.data.devices = (d, h)
+        entities = []
+        await climate.async_setup_entry(self.hass, self.entry, entities.extend)
+        entity, = entities
+        self.assertEqual((entity._attr_min_temp, entity._attr_max_temp), (16, 32))
+        self.send.assert_not_awaited()
+        for mode in (HVACMode.HEAT, HVACMode.COOL):
+            await entity.async_set_hvac_mode(mode)
+            for setpoint in (16, 32):
+                with self.subTest(mode=mode, setpoint=setpoint):
+                    await entity.async_set_temperature(temperature=setpoint)
+                    sent = self.send.await_args.args[-1]
+                    self.assertEqual(entity.native_target_temperature, setpoint)
+                    self.assertEqual(entity.hvac_mode, mode)
+                    self.assertEqual(len(sent.pulses), 212)
+                    frame = ProtocolTests._baxi_frame_from_pulses(sent.pulses)
+                    self.assertEqual(frame[1] >> 3, setpoint - 8)
+        self.assertEqual(self.send.await_count, 6)
+
+    async def test_baxi_ha_rejects_invalid_temperature_before_sending(self):
+        d = replace(self.d, ir_profile_id="7404", online=True)
+        h = replace(self.h, device_type="30", online=True)
+        self.coord.data.devices = (d, h)
+        entities = []
+        await climate.async_setup_entry(self.hass, self.entry, entities.extend)
+        entity, = entities
+        await entity.async_turn_on()
+        self.assertEqual(self.send.await_count, 1)
+        for value in (15, 33, 22.5, True, None):
+            with self.subTest(value=value), self.assertRaises(HomeAssistantError):
+                await entity.async_set_temperature(temperature=value)
+            self.assertEqual(self.send.await_count, 1)
+            self.assertEqual(entity.native_target_temperature, 22)
 
     async def test_failure_preserves_unknown_state(self):
         self.send.side_effect=OrviboBinaryError("private secret")

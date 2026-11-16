@@ -19,6 +19,7 @@ from .protocol import (
     build_readtable_request,
     parse_families,
     parse_readtable_devices,
+    safe_protocol_number,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class OrviboAccount:
     binary_user_name: str = field(default="", repr=False)
     binary_password: str = field(default="", repr=False)
     privacy_device_discovery_error: str | None = None
+    device_snapshot_started_ns: int = 0
 
 
 def _is_success(payload: Mapping[str, Any]) -> bool:
@@ -96,6 +98,7 @@ class OrviboCloudClient:
             try:
                 token, user_id = await self._async_oauth(host, email, password_md5)
                 families = await self._async_families(host, token, user_id)
+                device_snapshot_started_ns = time.monotonic_ns() if family_id else 0
                 devices, binary_user_name, binary_password = (
                     await self._async_readtable(
                         host,
@@ -123,6 +126,7 @@ class OrviboCloudClient:
                 devices=devices,
                 binary_user_name=binary_user_name,
                 binary_password=binary_password,
+                device_snapshot_started_ns=device_snapshot_started_ns,
             )
 
         if auth_rejected:
@@ -142,7 +146,10 @@ class OrviboCloudClient:
             f"https://{host}{_OAUTH_PATH}",
             params=params,
             timeout=_REQUEST_TIMEOUT,
+            allow_redirects=False,
         ) as response:
+            if 300 <= response.status < 400:
+                raise OrviboProtocolError(f"ORVIBO HTTP redirect refused ({response.status})")
             if response.status in (400, 401, 403):
                 await response.read()
                 raise OrviboInvalidAuthError("OAuth login failed")
@@ -177,7 +184,10 @@ class OrviboCloudClient:
             f"https://{host}{_FAMILIES_PATH}",
             json=body,
             timeout=_REQUEST_TIMEOUT,
+            allow_redirects=False,
         ) as response:
+            if 300 <= response.status < 400:
+                raise OrviboProtocolError(f"ORVIBO HTTP redirect refused ({response.status})")
             if response.status in (401, 403):
                 await response.read()
                 raise OrviboInvalidAuthError("Orvibo rejected the OAuth token")
@@ -199,7 +209,12 @@ class OrviboCloudClient:
     ) -> tuple[tuple[OrviboDevice, ...], str, str]:
         """Fetch the full device snapshot using the current app endpoint."""
         payload = await self._async_readtable_payload(host, access_token, user_id, family_id)
-        devices = parse_readtable_devices(payload)
+        try:
+            devices = parse_readtable_devices(payload)
+        except ValueError:
+            raise OrviboProtocolError(
+                "Readtable response contained a malformed device table"
+            ) from None
         binary_user_name, binary_password = _binary_credentials(payload, user_id)
         _LOGGER.debug("ORVIBO readtable discovery returned %d devices", len(devices))
         return devices, binary_user_name, binary_password
@@ -223,7 +238,10 @@ class OrviboCloudClient:
             f"https://{host}{_READTABLE_PATH}",
             json=body,
             timeout=_REQUEST_TIMEOUT,
+            allow_redirects=False,
         ) as response:
+            if 300 <= response.status < 400:
+                raise OrviboProtocolError(f"ORVIBO HTTP redirect refused ({response.status})")
             if response.status in (401, 403):
                 await response.read()
                 raise OrviboInvalidAuthError("Orvibo rejected the OAuth token")
@@ -233,8 +251,10 @@ class OrviboCloudClient:
         if not isinstance(payload, Mapping):
             raise OrviboProtocolError("Readtable response did not contain an object")
         if not _is_success(payload):
-            status = payload.get("status", payload.get("code"))
-            raise OrviboProtocolError(f"Readtable request failed (status={status!r})")
+            status = safe_protocol_number(payload.get("status", payload.get("code")))
+            raise OrviboProtocolError(
+                f"Readtable request failed (status={status if status is not None else 'non_numeric'})"
+            )
 
         return payload
 

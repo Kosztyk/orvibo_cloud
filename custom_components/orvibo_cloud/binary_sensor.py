@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CONF_USER_ID, DOMAIN, ORVIBO_LOCK_EVENT
+from .const import CONF_USER_ID, DOMAIN
 from .coordinator import OrviboCloudCoordinator
 from .entity import OrviboCloudDeviceEntity, OrviboCloudEntity
-from .protocol import property_switch_state
+from .protocol import OrviboDevice, property_switch_state, protocol_update_time
 from .selection import device_is_selected
 
 
@@ -52,6 +54,20 @@ class OrviboCloudConnectionBinarySensor(OrviboCloudEntity, BinarySensorEntity):
         return self.coordinator.last_update_success
 
 
+@dataclass(frozen=True, slots=True)
+class _DoorObservation:
+    is_open: bool
+    received_ns: int
+    update_time: int | None
+
+    def is_newer(self, other_received_ns: int, other_update_time: int | None) -> bool:
+        if self.update_time is not None and other_update_time is not None:
+            return (self.update_time, self.received_ns) > (
+                other_update_time, other_received_ns
+            )
+        return self.received_ns > other_received_ns
+
+
 class OrviboDoorBinarySensor(OrviboCloudDeviceEntity, BinarySensorEntity):
     """Report the open/closed state of a property-based door lock."""
 
@@ -65,30 +81,57 @@ class OrviboDoorBinarySensor(OrviboCloudDeviceEntity, BinarySensorEntity):
     ) -> None:
         super().__init__(coordinator, device_id)
         self._attr_unique_id = f"{device_id}_door"
-        self._event_properties: Mapping[str, Any] | None = None
+        self._door_push: _DoorObservation | None = None
         self.async_on_remove(
-            coordinator.hass.bus.async_listen(
-                ORVIBO_LOCK_EVENT,
+            async_dispatcher_connect(
+                coordinator.hass,
+                coordinator.door_status_signal,
                 self._handle_lock_event,
             )
         )
 
     @property
     def is_on(self) -> bool | None:
-        if self._event_properties is not None:
-            return property_switch_state(self._event_properties, "door_status")
         device = self._device
         if device is None:
             return None
+        if self._door_push is not None and self._is_current(self._door_push, device):
+            return self._door_push.is_open
         return property_switch_state(device.properties, "door_status")
 
-    def _handle_lock_event(self, event: Any) -> None:
-        event_uid = event.data.get("uid")
-        event_device_id = event.data.get("device_id")
-        if self._device_id not in {event_uid, event_device_id}:
+    def _is_current(self, observation: _DoorObservation, device: OrviboDevice) -> bool:
+        return (
+            observation.received_ns > self.coordinator.last_push_reconnect_ns
+            and observation.is_newer(
+                self.coordinator.data.device_snapshot_started_ns, device.status_update_time
+            )
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        device = self._device
+        if self._door_push is not None and (
+            device is None or not self._is_current(self._door_push, device)
+        ):
+            self._door_push = None
+        super()._handle_coordinator_update()
+
+    @callback
+    def _handle_lock_event(self, event: Mapping[str, Any], received_ns: int) -> None:
+        if self._device_id not in (event.get("device_id"), event.get("uid")):
             return
-        door_state = event.data.get("door_state")
+        door_state = event.get("door_state")
         if door_state not in {"open", "closed"}:
             return
-        self._event_properties = {"door_status": door_state}
+        observation = _DoorObservation(
+            door_state == "open", received_ns, protocol_update_time(event.get("update_time"))
+        )
+        device = self._device
+        if device is None or not self._is_current(observation, device):
+            return
+        if self._door_push is not None and not observation.is_newer(
+            self._door_push.received_ns, self._door_push.update_time
+        ):
+            return
+        self._door_push = observation
         self.async_write_ha_state()

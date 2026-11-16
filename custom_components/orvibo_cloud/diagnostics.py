@@ -4,52 +4,49 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 
 from .blaupunkt_ls175 import is_ls175_test_target
-from .const import CONF_PASSWORD_HASH, CONF_USER_ID, DOMAIN
+from .const import CONF_HOST, DOMAIN
 from .control import is_allone_tv, is_rf_curtain, tv_commands_for_profile
 from .coordinator import OrviboCloudCoordinator
-from .protocol import ac_hub_matches
+from .protocol import ORVIBO_HOSTS, ac_hub_matches
 from .selection import (
     SPEAKER_MODEL_BLAUPUNKT_LS175, configured_speaker_ir_models,
     device_is_selected, speaker_ir_profile_is_selected,
 )
-from .ac_profiles import ac_profile
 
-_TO_REDACT = {CONF_PASSWORD_HASH, CONF_USER_ID, CONF_EMAIL}
+
+def _diagnostic_type(value: str) -> str | None:
+    """Keep short vendor type codes and omit free-form cloud strings."""
+    return value if len(value) <= 8 and value.isascii() and value.isdecimal() else None
 
 
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> dict[str, Any]:
-    """Return account diagnostics without credentials or OAuth tokens."""
+    """Return an allowlist of non-identifying account and routing data."""
 
     coordinator: OrviboCloudCoordinator = hass.data[DOMAIN][entry.entry_id]
+    host = entry.data.get(CONF_HOST)
     return {
-        "entry": async_redact_data(dict(entry.data), _TO_REDACT),
+        "entry": {CONF_HOST: host} if host in ORVIBO_HOSTS else {},
+        "binary_server_trust": coordinator.binary_server_trust,
         "last_update_success": coordinator.last_update_success,
         "family_count": len(coordinator.data.families),
         "device_count": len(coordinator.data.devices),
-        "device_discovery_error": coordinator.device_discovery_error,
-        "privacy_device_discovery_error": (
-            coordinator.privacy_device_discovery_error
+        "device_discovery_error": (
+            "discovery_failed" if coordinator.device_discovery_error else None
         ),
-        "families": [
-            {"family_id": "**REDACTED**", "name": family.name}
-            for family in coordinator.data.families
-        ],
+        "privacy_device_discovery_error": (
+            "discovery_failed" if coordinator.privacy_device_discovery_error else None
+        ),
         "devices": [
             {
-                "uid": "**REDACTED**",
-                "name": device.name,
-                "model": device.model,
-                "device_type": device.device_type,
-                "sub_device_type": device.sub_device_type,
+                "device_type": _diagnostic_type(device.device_type),
+                "sub_device_type": _diagnostic_type(device.sub_device_type),
                 "ir_profile_id": device.ir_profile_id or None,
                 "ac_ir_encoder": (
                     "midea_48_kaysun_swing"
@@ -88,13 +85,7 @@ async def async_get_config_entry_diagnostics(
                     if (device.device_type, device.sub_device_type) == ("5", "2")
                     else []
                 ),
-                "room": device.room,
-                "parent_uid": "**REDACTED**" if device.parent_uid else "",
                 "online": device.online,
-                "value1": device.value1,
-                "value2": device.value2,
-                "value3": device.value3,
-                "value4": device.value4,
                 "has_control_uid": bool(device.cloud_uid),
                 "control_profile": (
                     "allone_rf" if is_rf_curtain(device, coordinator.data.devices)
@@ -109,7 +100,10 @@ async def async_get_config_entry_diagnostics(
                 ),
                 "tv_profile": (
                     entry.options.get("tv_profile", "lg")
-                    if is_allone_tv(device, coordinator.data.devices) else None
+                    if (
+                        is_allone_tv(device, coordinator.data.devices)
+                        and entry.options.get("tv_profile", "lg") in ("lg", "stored")
+                    ) else None
                 ),
                 "selected": device_is_selected(entry.options, device.uid),
             }

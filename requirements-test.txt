@@ -3,3 +3,5 @@
 aiohttp>=3.11,<4
 # TLS handshake and ORVIBO binary-protocol regression tests.
 pycryptodome==3.23.0
+# Verified peer public-key extraction.
+cryptography>=46.0.5

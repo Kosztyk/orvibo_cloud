@@ -7,6 +7,7 @@ import json
 import hashlib
 import logging
 from pathlib import Path
+import re
 import secrets
 import select
 import socket
@@ -19,9 +20,13 @@ import zlib
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
+from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .control import OrviboInfrared, is_tv_button_order
-from .protocol import OrviboDevice, extract_devices
+from .protocol import ORVIBO_HOSTS, OrviboDevice, extract_devices
+from .protocol import safe_protocol_number as _safe_protocol_number
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,31 +38,19 @@ _MAX_DEVICE_PAGES: Final = 20
 _SESSION_RESPONSE_IDLE_TIMEOUT: Final = 0.2
 _CERT_PATH: Final = Path(__file__).with_name("orvibo_client_cert.pem")
 _KEY_PATH: Final = Path(__file__).with_name("orvibo_client_key.pem")
-# Legacy ORVIBO 10002 self-signed CA corroborated in two established public
-# ORVIBO integrations and the user's TLS diagnostic; not a WebPKI root.
+# ORVIBO port 10002 CA from the signed HomeMate app's client trust stores.
 _PINNED_SERVER_CA: Final = Path(__file__).with_name("orvibo_server_ca.pem")
 _PINNED_SERVER_CA_SHA256: Final = "f0046d72573a8e20cad178194385259f7338be2c9f9d12ac8646d1a24160ce2a"
 
 # Persistent, operator-provided regional CA trust anchors. Never auto-import
 # a certificate from the network: its authenticity must be checked out-of-band.
-# Store the PEM outside custom_components so updates do not delete it.
+# Store per-region CA and SPKI files beside custom_components.
 _SERVER_CA_DIRECTORY: Final = Path(__file__).resolve().parents[2] / "orvibo_trust"
-
-
-def _safe_protocol_number(value: object) -> int | None:
-    """Keep protocol diagnostics numeric; never echo remote text or IDs."""
-
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if -(2**63) <= value < 2**63 else None
-    if isinstance(value, str) and len(value) <= 20:
-        try:
-            number = int(value)
-        except ValueError:
-            return None
-        return number if -(2**63) <= number < 2**63 else None
-    return None
+# The public application certificate can satisfy legacy hostname and CA
+# verification. Its published private key disqualifies it as a server identity.
+_SHARED_CLIENT_SPKI_SHA256: Final = (
+    "fa7c5312f779bc51bf285e43ba9e46851f0682c24b22bc5dbd362caeb8135803"
+)
 
 
 def _matches_control_reply(
@@ -73,29 +66,20 @@ def _matches_control_reply(
         if value not in (None, "") and str(value) != str(request.get(key)):
             return False
 
-    # A broadcast for this exact device may use its own sequence number.
-    # The hardware UID alone is insufficient: Allone children share a hub.
-    if command == 42 and packet.get("deviceId") not in (None, ""):
-        return any(
-            key in packet
-            for key in ("status", "value1", "value2", "value3", "value4", "properties")
-        )
-
-    sequence_matches: bool | None = None
+    sequence_matches = False
     for key in ("serial", "uniSerial"):
-        if key in packet:
-            sequence_matches = (
-                _safe_protocol_number(packet[key]) is not None
-                and _safe_protocol_number(packet[key])
-                == _safe_protocol_number(request.get(key))
-            )
-            if not sequence_matches:
-                return False
+        if key not in packet:
+            continue
+        sequence = _safe_protocol_number(packet[key])
+        if sequence is None or sequence != _safe_protocol_number(request.get(key)):
+            return False
+        sequence_matches = True
 
     if command == 42:
-        return sequence_matches is True and any(
+        # A device ID or hub UID can appear in an unsolicited state push.
+        return sequence_matches and any(
             key in packet
-            for key in ("status", "value1", "value2", "value3", "value4", "properties")
+            for key in ("value1", "value2", "value3", "value4", "properties")
         )
     # This client opens a separate connection for each command. A legacy
     # cmd=15 acknowledgement may omit both identifiers and sequence numbers.
@@ -135,14 +119,59 @@ class OrviboAuthenticationError(OrviboBinaryError):
     """A confirmed rejection of the binary ORVIBO cloud login."""
 
 
+class OrviboServerIdentityError(OrviboBinaryError):
+    """The binary endpoint has no acceptable server identity."""
+
+
+def load_binary_server_pins(host: str) -> frozenset[str]:
+    """Read operator-verified SHA-256 SPKI digests for the configured host."""
+    if host not in ORVIBO_HOSTS:
+        raise OrviboServerIdentityError("ORVIBO binary hostname is not supported")
+    try:
+        contents = (_SERVER_CA_DIRECTORY / f"{host}.spki").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return frozenset()
+    except (OSError, UnicodeError):
+        raise OrviboServerIdentityError("ORVIBO server pin file could not be read") from None
+
+    pins = frozenset(line.strip().lower() for line in contents.splitlines() if line.strip())
+    if not all(re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins):
+        raise OrviboServerIdentityError("ORVIBO server pin file contains an invalid digest")
+    if _SHARED_CLIENT_SPKI_SHA256 in pins:
+        raise OrviboServerIdentityError("ORVIBO shared client key is forbidden as a server pin")
+    return pins
+
+
+def _verify_server_key(tls_socket: ssl.SSLSocket, pins: frozenset[str]) -> None:
+    """Reject the shared client key and enforce any configured server pins."""
+    certificate = tls_socket.getpeercert(binary_form=True)
+    if not certificate:
+        raise OrviboServerIdentityError("ORVIBO binary endpoint did not present a certificate")
+    try:
+        key = x509.load_der_x509_certificate(certificate).public_key()
+        spki = key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    except (UnsupportedAlgorithm, ValueError):
+        raise OrviboServerIdentityError("ORVIBO binary server key could not be read") from None
+    fingerprint = hashlib.sha256(spki).hexdigest()
+    if fingerprint == _SHARED_CLIENT_SPKI_SHA256:
+        raise OrviboServerIdentityError("ORVIBO binary server presented the shared client key")
+    if pins and fingerprint not in pins:
+        raise OrviboServerIdentityError("ORVIBO binary server public key was not approved")
+
+
 class OrviboCaptureError(OrviboBinaryError):
     """Describe a capture failure without exposing connection credentials."""
 
     def __init__(self, stage: str, cause: BaseException) -> None:
         self.stage = stage
         self.auth_rejected = isinstance(cause, OrviboAuthenticationError)
+        self.identity_rejected = isinstance(
+            cause, (OrviboServerIdentityError, ssl.SSLCertVerificationError)
+        )
         self.error_type = type(cause).__name__
-        if isinstance(cause, OSError):
+        if self.identity_rejected:
+            self.detail = "server identity verification failed"
+        elif isinstance(cause, OSError):
             self.detail = f"{self.error_type} (errno={cause.errno!r})"
         elif isinstance(cause, OrviboBinaryError):
             self.detail = _safe_binary_error_detail(cause)
@@ -207,8 +236,8 @@ class OrviboBinaryClient:
             self.close()
 
         shapes = [
-            {"cmd": packet.get("cmd"), "keys": sorted(packet.keys())}
-            for packet in packets
+            {"cmd": _safe_protocol_number(packet.get("cmd")), "fields": len(packet)}
+            for packet in packets[:30]
         ]
         devices = extract_devices(packets)
         _LOGGER.debug(
@@ -254,18 +283,23 @@ class OrviboBinaryClient:
                 )
                 packets.extend(batch)
                 if not batch or any(
-                    _matches_control_reply(packet, request) for packet in batch
+                    _safe_protocol_number(packet.get("cmd")) == 15
+                    and _matches_control_reply(packet, request)
+                    for packet in batch
                 ):
                     break
         finally:
             self.close()
 
         replies = [packet for packet in packets if _matches_control_reply(packet, request)]
+        acknowledgements = [
+            packet for packet in replies if _safe_protocol_number(packet.get("cmd")) == 15
+        ]
         rejected = next(
-            (packet for packet in replies if packet.get("status") not in (None, 0, "0")),
+            (packet for packet in acknowledgements if _safe_protocol_number(packet["status"]) != 0),
             None,
         )
-        if rejected is not None or not replies:
+        if rejected is not None or not acknowledgements:
             summary = [_control_reply_summary(packet, request) for packet in packets[:30]]
             safe_order = order if is_tv_button_order(order) or order in {
                 "open", "close", "stop", "on", "off", "set property",
@@ -276,9 +310,9 @@ class OrviboBinaryClient:
                 safe_order,
                 json.dumps(summary, ensure_ascii=True, separators=(",", ":")),
             )
-        if not replies:
+        if not acknowledgements:
             raise OrviboBinaryError(
-                "ORVIBO control did not return a matching response; "
+                "ORVIBO control did not return a matching acknowledgement; "
                 "see control reply diagnostics in the log"
             )
         if rejected is not None:
@@ -299,7 +333,7 @@ class OrviboBinaryClient:
         for key in ("value1", "value2", "value3", "value4"):
             try:
                 values.append(int(response[key]))
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 values.append(None)
         return values[0], values[1], values[2], values[3]
 
@@ -307,17 +341,27 @@ class OrviboBinaryClient:
         self,
         stop_event: Event,
         callback: Callable[[Mapping[str, Any]], None],
+        *,
+        on_connected: Callable[[], None] | None = None,
     ) -> None:
         """Keep one authenticated session open and deliver unsolicited packets."""
 
         stage = "connect"
         try:
             self._connect()
+            if stop_event.is_set():
+                return
             stage = "handshake"
             self._handshake()
+            if stop_event.is_set():
+                return
             stage = "login"
             self._login()
+            if stop_event.is_set():
+                return
             stage = "stream"
+            if on_connected is not None:
+                on_connected()
             while not stop_event.is_set():
                 if self._socket is None:
                     raise OrviboBinaryError("ORVIBO capture socket is not connected")
@@ -344,23 +388,22 @@ class OrviboBinaryClient:
             self._socket = None
 
     def _connect(self) -> None:
+        pins = load_binary_server_pins(self._host)
         if not _CERT_PATH.is_file() or not _KEY_PATH.is_file():
             raise OrviboBinaryError("ORVIBO client certificate files are missing")
 
-        # Require system-trusted server certificate AND matching server hostname.
-        # Never fall back to an insecure connection, including legacy servers.
-        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
-        # The specific ORVIBO private CA has been corroborated against two
-        # public source repositories and a captured server chain, but it is
-        # not a WebPKI-trusted or independently manufacturer-authenticated CA.
-        # Pin the exact CA DER fingerprint before it can be a trust anchor.
-        if not _PINNED_SERVER_CA.is_file():
-            raise OrviboBinaryError("ORVIBO pinned server CA is missing")
-        pem = _PINNED_SERVER_CA.read_text(encoding="ascii")
-        actual_hash = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+        # Use the app's trust anchor for the binary endpoint. Verify the same
+        # DER bytes that will be loaded into the TLS trust store.
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        try:
+            pem = _PINNED_SERVER_CA.read_text(encoding="ascii")
+            ca_der = ssl.PEM_cert_to_DER_cert(pem)
+        except (OSError, ValueError):
+            raise OrviboServerIdentityError("ORVIBO pinned server CA could not be read") from None
+        actual_hash = hashlib.sha256(ca_der).hexdigest()
         if actual_hash != _PINNED_SERVER_CA_SHA256:
-            raise OrviboBinaryError("ORVIBO pinned server CA fingerprint mismatch")
-        context.load_verify_locations(cafile=str(_PINNED_SERVER_CA))
+            raise OrviboServerIdentityError("ORVIBO pinned server CA fingerprint mismatch")
+        context.load_verify_locations(cadata=ca_der)
         # Preserve optional operator-supplied additional regional CAs.
         ca_file = _SERVER_CA_DIRECTORY / f"{self._host}.pem"
         if ca_file.is_file():
@@ -379,10 +422,16 @@ class OrviboBinaryClient:
         raw_socket = socket.create_connection((self._host, _PORT), timeout=15)
         raw_socket.settimeout(15)
         try:
-            self._socket = context.wrap_socket(raw_socket, server_hostname=self._host)
+            tls_socket = context.wrap_socket(raw_socket, server_hostname=self._host)
         except BaseException:
             raw_socket.close()
             raise
+        try:
+            _verify_server_key(tls_socket, pins)
+        except BaseException:
+            tls_socket.close()
+            raise
+        self._socket = tls_socket
 
     def _next_serial(self) -> int:
         self._serial += 1
@@ -543,7 +592,7 @@ class OrviboBinaryClient:
             None,
         )
         if response is None:
-            commands = [packet.get("cmd") for packet in packets]
+            commands = [_safe_protocol_number(packet.get("cmd")) for packet in packets[:30]]
             raise OrviboBinaryError(
                 "ORVIBO binary handshake did not return a key "
                 f"(packets={len(packets)}, commands={commands})"
@@ -575,15 +624,16 @@ class OrviboBinaryClient:
         )
         response = next((packet for packet in packets if packet.get("cmd") == 2), None)
         if response is None:
-            commands = [packet.get("cmd") for packet in packets]
+            commands = [_safe_protocol_number(packet.get("cmd")) for packet in packets[:30]]
             raise OrviboBinaryError(
                 "ORVIBO binary login did not return a response "
                 f"(packets={len(packets)}, commands={commands})"
             )
         if response.get("status") not in (None, 0, "0"):
+            status = _safe_protocol_number(response.get("status"))
             raise OrviboAuthenticationError(
                 "ORVIBO binary login was rejected "
-                f"(status={response.get('status')!r})"
+                f"(status={status if status is not None else 'non_numeric'})"
             )
         return packets
 

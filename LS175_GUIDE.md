@@ -1,4 +1,4 @@
-# Blaupunkt LS 175 — ORVIBO Cloud v1.4.1
+# Blaupunkt LS 175 — ORVIBO Cloud
 
 ## Eligibility and setup
 
@@ -19,7 +19,7 @@ Codes `01 = 0x00FF9867`, `04 = 0x00FF827D`, `05 = 0x00FFC23D`, `09 = 0x00FF10EF`
 
 ## Power state limitation
 
-Only one NEC power toggle word exists for this working soundbar, not distinct `POWER_ON` and `POWER_OFF` codes. The Home Assistant Power switch tracks a **local estimated state**; an external remote, HomeMate action or unplug may make it wrong. `switch.toggle` always sends one power toggle, while `turn_on`/`turn_off` consult that estimate. The integration cannot truthfully confirm physical power state, and no automatic command is sent on startup.
+Only one NEC power toggle word exists for this working soundbar, not distinct `POWER_ON` and `POWER_OFF` codes. The Home Assistant Power switch tracks a **local estimated state**; an external remote, HomeMate action or unplug may make it wrong. `switch.toggle` always sends one power toggle, while `turn_on`/`turn_off` consult that estimate. Version 1.4.2 serializes the power check, IR send and state update. A matching cloud acknowledgement updates the estimate.
 
 ## Troubleshooting and rollback
 

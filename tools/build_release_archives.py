@@ -61,7 +61,7 @@ def build(root: Path, output: Path, version: str) -> tuple[Path, Path]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--version", default="1.4.1")
+    parser.add_argument("--version", default="1.4.2")
     args = parser.parse_args()
     install, source = build(ROOT, args.output, args.version)
     for item in (install, source):

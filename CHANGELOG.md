@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2 — 2026-11-16
+
+- Extend BAXI Anori JSG35 profile `7404` to 16–32 °C in Heat and Cool with offline coverage for all setpoints. Physical command testing covered 19–23 °C.
+- Require a matching command acknowledgement before updating assumed state. Record successful RF-blind Stop commands in Activity.
+- Use the freshest door observation and refresh the cloud snapshot on push reconnect. Retain the last valid device table when a refresh fails validation.
+- Serialize Blaupunkt LS 175 power checks and toggles. Limit TV requests to 40 commands including repeats and free the shared lock between TV keys.
+- Verify the binary server using the bundled HomeMate CA and hostname, reject the shared client key as a server key, refuse REST redirects and redact household identifiers in diagnostics.
+- Document supported devices, upgrade steps and hardware validation.
+
 ## 1.4.1 — 2026-11-14
 
 - Promote the user-tested local v1.4.1b9 branch as a stable release candidate without changing cloud/TLS transport, Vivax/Midea encoder, original climate runtime, TV, blinds or home configuration wizard.

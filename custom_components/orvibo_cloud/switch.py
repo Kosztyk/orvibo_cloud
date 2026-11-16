@@ -8,6 +8,7 @@ power loss. Home Assistant switch.toggle always emits the real IR toggle.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -59,6 +60,7 @@ class OrviboLS175PowerSwitch(OrviboLS175TestEntity, SwitchEntity, RestoreEntity)
     def __init__(self, coordinator: OrviboCloudCoordinator, device_id: str) -> None:
         super().__init__(coordinator, device_id)
         self._attr_unique_id = f"{device_id}_ls175_beta_power_switch"
+        self._power_lock = asyncio.Lock()
         # Initial position is only a UI estimate, not a claim about hardware.
         self._attr_is_on = False
         self._state_origin = "initial_estimate"
@@ -80,27 +82,26 @@ class OrviboLS175PowerSwitch(OrviboLS175TestEntity, SwitchEntity, RestoreEntity)
             "caution": "Power state is estimated; other remotes may desynchronize it",
         }
 
-    async def _async_toggle_power(self) -> None:
-        """Send one physical toggle, update UI only after successful ACK."""
-        await self._async_send_ls175(("power_toggle",))
-        self._attr_is_on = not self._attr_is_on
-        self._state_origin = "last_acknowledged_toggle"
-        self.async_write_ha_state()
+    async def _async_set_power(self, target: bool | None) -> None:
+        """Serialize the optimistic state check and the physical toggle."""
+        async with self._power_lock:
+            if not self.available:
+                raise HomeAssistantError("ORVIBO LS175 target unavailable")
+            if target is not None and self._attr_is_on == target:
+                return
+            await self._async_send_ls175(("power_toggle",))
+            self._attr_is_on = not self._attr_is_on
+            self._state_origin = "last_acknowledged_toggle"
+            self.async_write_ha_state()
 
     async def async_toggle(self, **kwargs: Any) -> None:
         """Always send the native IR toggle, regardless of our estimate."""
-        await self._async_toggle_power()
+        await self._async_set_power(None)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Move the optimistic slider to ON using at most one IR toggle."""
-        if not self.available:
-            raise HomeAssistantError("ORVIBO LS175 target unavailable")
-        if not self._attr_is_on:
-            await self._async_toggle_power()
+        await self._async_set_power(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Move the optimistic slider to OFF using at most one IR toggle."""
-        if not self.available:
-            raise HomeAssistantError("ORVIBO LS175 target unavailable")
-        if self._attr_is_on:
-            await self._async_toggle_power()
+        await self._async_set_power(False)

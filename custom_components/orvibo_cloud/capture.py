@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import hashlib
 import json
 import logging
@@ -12,10 +12,12 @@ import time
 from threading import Event, Lock, Thread
 from typing import Any, Final
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .binary import OrviboBinaryClient, OrviboCaptureError
 from .const import ORVIBO_LOCK_EVENT
+from .protocol import protocol_update_time
 
 _LOGGER = logging.getLogger(__name__)
 _INITIAL_RECONNECT_DELAY_SECONDS: Final = 5
@@ -173,9 +175,7 @@ def parse_lock_event(packet: Mapping[str, Any]) -> dict[str, Any] | None:
         "door_state": door_state,
         "lock_state": lock_state,
         "states": states,
-        "update_time": packet.get("updateTimeSec")
-        if isinstance(packet.get("updateTimeSec"), int)
-        else None,
+        "update_time": protocol_update_time(packet.get("updateTimeSec")),
     }
 
 
@@ -190,10 +190,16 @@ class OrviboRawEventCapture:
         password_md5: str,
         family_id: str,
         capture_raw_events: bool = False,
+        *,
+        door_status_signal: str | None = None,
+        on_reconnect: Callable[[int], None] | None = None,
     ) -> None:
         self._hass = hass
         self._connection = (host, email, password_md5, family_id)
         self._capture_raw_events = capture_raw_events
+        self._door_status_signal = door_status_signal
+        self._on_reconnect = on_reconnect
+        self._connected_once = False
         self._salt = secrets.token_bytes(32)
         self._stop_event = Event()
         self._socket_lock = Lock()
@@ -241,16 +247,24 @@ class OrviboRawEventCapture:
             with self._socket_lock:
                 self._client = client
             retry_delay = _INITIAL_RECONNECT_DELAY_SECONDS
-            stop_auth_retry = False
+            stop_retry = False
             try:
-                client.capture_events(self._stop_event, self._capture)
+                client.capture_events(
+                    self._stop_event, self._capture, on_connected=self._connected
+                )
             except OrviboCaptureError as err:
                 if not self._stop_event.is_set():
                     if err.auth_rejected:
-                        stop_auth_retry = True
+                        stop_retry = True
                         _LOGGER.error(
                             "ORVIBO binary push login rejected; listener stopped "
                             "until integration reload or account reauthentication"
+                        )
+                    elif err.identity_rejected:
+                        stop_retry = True
+                        _LOGGER.error(
+                            "ORVIBO binary push server identity rejected; listener stopped "
+                            "until integration reload"
                         )
                     else:
                         if time.monotonic() - started_at >= _STABLE_CONNECTION_SECONDS:
@@ -285,13 +299,37 @@ class OrviboRawEventCapture:
                 with self._socket_lock:
                     if self._client is client:
                         self._client = None
-            if stop_auth_retry:
+            if stop_retry:
                 break
             self._stop_event.wait(retry_delay)
+
+    def _connected(self) -> None:
+        """Request a table refresh after a new authenticated stream reconnects."""
+        if self._connected_once and self._on_reconnect is not None:
+            self._hass.loop.call_soon_threadsafe(
+                self._async_handle_reconnect, time.monotonic_ns()
+            )
+        self._connected_once = True
+
+    @callback
+    def _async_handle_reconnect(self, reconnected_ns: int) -> None:
+        if not self._stop_event.is_set() and self._on_reconnect is not None:
+            self._on_reconnect(reconnected_ns)
+
+    @callback
+    def _async_publish_door_status(self, event: Mapping[str, Any], received_ns: int) -> None:
+        if not self._stop_event.is_set() and self._door_status_signal is not None:
+            async_dispatcher_send(self._hass, self._door_status_signal, event, received_ns)
 
     def _capture(self, packet: Mapping[str, Any]) -> None:
         lock_event = parse_lock_event(packet)
         if lock_event is not None:
+            # A poll may have changed the door since an identical push arrived.
+            # Keep reporting observations to the sensor while deduplicating bus events.
+            if self._door_status_signal is not None and lock_event["door_state"] is not None:
+                self._hass.loop.call_soon_threadsafe(
+                    self._async_publish_door_status, lock_event, time.monotonic_ns()
+                )
             signature = (
                 lock_event["uid"],
                 lock_event["door_state"],

@@ -14,6 +14,7 @@ from homeassistant.components.cover import (
     CoverEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_NAME, EVENT_LOGBOOK_ENTRY
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -209,9 +210,22 @@ class OrviboCurtainCover(
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         if self._uses_rf_control:
+            context = self._context
             await self._async_control(
                 rf_curtain_command("stop"), ha_position=None, rf_action="stop"
             )
+            # Activity displays the Stop action independently of cover position.
+            state = self.hass.states.get(self.entity_id)
+            if state is not None:
+                self.hass.bus.async_fire(
+                    EVENT_LOGBOOK_ENTRY,
+                    {
+                        ATTR_NAME: state.name,
+                        ATTR_ENTITY_ID: self.entity_id,
+                        "message": "Stopped",
+                    },
+                    context=context,
+                )
             return
         await self._async_control(curtain_stop_command(), ha_position=None)
 

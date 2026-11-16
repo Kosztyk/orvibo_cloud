@@ -103,6 +103,11 @@ _BAXI_7404_OFF_PULSES = (
 )
 
 
+# BAXI's original remote permits 16–32°C. The extended output vectors are
+# structurally valid but await physical verification above/below 19–23°C.
+BAXI_7404_MIN_TEMPERATURE = 16
+BAXI_7404_MAX_TEMPERATURE = 32
+
 _BAXI_MODE_DEFAULTS = {
     "heat": ACState("heat", 22, "low", "off", "none"),
     "cool": ACState("cool", 19, "low", "off", "none"),
@@ -117,7 +122,10 @@ def baxi_7404_candidate(
     """Generate a 13-byte Electra/AUX-style frame from observed BAXI scene data."""
     if mode not in ("heat", "cool") or fan not in ("low", "medium", "high"):
         raise ValueError("Unsupported BAXI operating mode or fan")
-    if type(temperature) is not int or not 16 <= temperature <= 30:
+    if (
+        type(temperature) is not int
+        or not BAXI_7404_MIN_TEMPERATURE <= temperature <= BAXI_7404_MAX_TEMPERATURE
+    ):
         raise ValueError("Unsupported BAXI trial temperature")
     frame = bytearray.fromhex("c3 77 e0 00 60 00 80 00 00 30 00 05 2f")
     fan_code = {"low": 1, "medium": 2, "high": 3}[fan]
@@ -221,7 +229,8 @@ IR_PROFILES = {
     ("5", "2", "7404"): ACProfile(
         manufacturer="BAXI", remote="Anori JSG35", default=ACState(),
         modes=("off", "heat", "cool"), encode=_baxi_7404_command,
-        hub_type="30", turn_on_mode="heat", temperatures=range(19, 24),
+        hub_type="30", turn_on_mode="heat",
+        temperatures=range(BAXI_7404_MIN_TEMPERATURE, BAXI_7404_MAX_TEMPERATURE + 1),
         fans=("low", "medium", "high"),
         # Horizontal-only was physically exercised on BAXI in the contributor's
         # experimental fork; the public profile exposes horizontal-only swing.

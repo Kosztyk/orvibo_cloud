@@ -326,6 +326,21 @@ class BetaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(entity._attr_is_on)
         self.assertEqual(getattr(entity,"_ha_state_writes",0),0)
 
+    async def test_concurrent_turn_on_and_off_each_send_only_one_toggle(self):
+        entity = ha_switch.OrviboLS175PowerSwitch(self.coord, self.speaker.uid)
+
+        async def acknowledge(*args):
+            # Let the second caller run while the first command is in flight.
+            await asyncio.sleep(0)
+
+        self.send.side_effect = acknowledge
+        await asyncio.gather(entity.async_turn_on(), entity.async_turn_on())
+        self.assertTrue(entity._attr_is_on)
+        self.assertEqual(self.send.await_count, 1)
+        await asyncio.gather(entity.async_turn_off(), entity.async_turn_off())
+        self.assertFalse(entity._attr_is_on)
+        self.assertEqual(self.send.await_count, 2)
+
     async def test_switch_option_removal_and_missing_route_block_IR(self):
         switches=[]
         await ha_switch.async_setup_entry(self.hass,self.entry,switches.extend)
@@ -345,6 +360,86 @@ class BetaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(entity._attr_is_on)
         self.assertEqual(entity.extra_state_attributes["state_source"],"restored_estimate")
         self.send.assert_not_awaited()
+
+
+class TVSequenceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        hub, tv = devices({
+            "deviceId": "tv", "uid": HUB_ROW["uid"], "deviceType": 6, "online": True,
+        }, HUB_ROW)
+        self.send = AsyncMock()
+        self.coordinator = SimpleNamespace(
+            entry=SimpleNamespace(
+                options={"tv_profile": "stored"},
+                data={"host": "test.invalid", "family_id": "family"},
+            ),
+            data=SimpleNamespace(
+                devices=(tv, hub), binary_user_name="user", binary_password="test",
+            ),
+            hass=SimpleNamespace(async_add_executor_job=self.send),
+            last_update_success=True,
+            tv_control_lock=asyncio.Lock(),
+            tv_sequence_lock=asyncio.Lock(),
+        )
+        self.remote = remote.OrviboTVRemote(self.coordinator, tv.uid)
+        self.assertTrue(self.remote.available)
+
+    async def test_rejects_oversized_sequence_before_sending_or_exhausting_input(self):
+        processed = []
+
+        def commands():
+            for index in range(100):
+                processed.append(index)
+                yield "volume_up"
+
+        with self.assertRaisesRegex(HomeAssistantError, "up to 40"):
+            await self.remote.async_send_command(commands(), num_repeats=20, delay_secs=60)
+        self.send.assert_not_awaited()
+        self.assertEqual(processed, [0, 1, 2])
+
+    async def test_keeps_repeat_order_up_to_the_limit(self):
+        await self.remote.async_send_command(
+            ("volume_up", "volume_down"), num_repeats=20, delay_secs=0
+        )
+        self.assertEqual(
+            [call.args[7] for call in self.send.await_args_list],
+            ["310113", "310114"] * 20,
+        )
+
+    async def test_other_ir_runs_while_tv_waits_between_keys(self):
+        started_delay = asyncio.Event()
+        finish_delay = asyncio.Event()
+        order = []
+
+        async def send_one(*args):
+            self.assertTrue(self.coordinator.tv_control_lock.locked())
+            order.append(args[7])
+
+        async def inter_key_delay(delay):
+            self.assertEqual(delay, 60)
+            self.assertFalse(self.coordinator.tv_control_lock.locked())
+            started_delay.set()
+            await finish_delay.wait()
+
+        async def other_ir_control():
+            async with self.coordinator.tv_control_lock:
+                order.append("other IR")
+
+        self.send.side_effect = send_one
+        send_sequence = remote.OrviboTVEntity._async_send_tv_commands
+        with patch.dict(send_sequence.__globals__, {"asyncio": SimpleNamespace(sleep=inter_key_delay)}):
+            tasks = [asyncio.create_task(self.remote.async_send_command(
+                ("volume_up", "volume_down"), delay_secs=60
+            ))]
+            try:
+                await asyncio.wait_for(started_delay.wait(), timeout=2)
+                tasks.append(asyncio.create_task(self.remote.async_send_command("power_toggle")))
+                await asyncio.wait_for(other_ir_control(), timeout=2)
+                self.assertEqual(order, ["310113", "other IR"])
+            finally:
+                finish_delay.set()
+                await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+        self.assertEqual(order, ["310113", "other IR", "310114", "310110"])
 
 
 if __name__ == "__main__":

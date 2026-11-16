@@ -1,4 +1,4 @@
-# Third-party protocol research, source provenance and licenses (v1.4.1)
+# Third-party protocol research, source provenance and licenses
 
 ORVIBO Cloud is based on `maycode0-0/orvibo-cloud`; its MIT license is retained
 for the original integration and other MIT-covered files. **This does not mean

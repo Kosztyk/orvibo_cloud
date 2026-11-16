@@ -45,6 +45,7 @@ class OrviboDevice:
     value4: int | None = None
     properties: Mapping[str, Any] = field(default_factory=dict)
     ir_profile_id: str = ""
+    status_update_time: int | None = None
 
 
 def ac_hub_matches(device: OrviboDevice, devices: Iterable[OrviboDevice]) -> list[dict[str, str | bool | None]]:
@@ -63,6 +64,28 @@ def ac_hub_matches(device: OrviboDevice, devices: Iterable[OrviboDevice]) -> lis
                 "online": hub.online,
             })
     return matches
+
+
+def safe_protocol_number(value: object) -> int | None:
+    """Keep protocol diagnostics numeric; never echo remote text or IDs."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if -(2**63) <= value < 2**63 else None
+    if isinstance(value, str) and len(value) <= 20:
+        try:
+            number = int(value)
+        except ValueError:
+            return None
+        return number if -(2**63) <= number < 2**63 else None
+    return None
+
+
+def protocol_update_time(value: object) -> int | None:
+    """Read the vendor's optional positive status timestamp in seconds."""
+    timestamp = safe_protocol_number(value)
+    return timestamp if timestamp is not None and timestamp > 0 else None
 
 
 def password_hash(password: str) -> str:
@@ -237,12 +260,28 @@ def _ac_ir_profile_id(item: Mapping[str, Any], device_type: str) -> str:
     return values.pop() if len(values) == 1 else ""
 
 
+def _readtable_device_id(item: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = item.get(key)
+        if type(value) in (int, str) and (device_id := str(value).strip()):
+            return device_id
+    raise ValueError("Readtable row is missing a valid device ID")
+
+
 def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, ...]:
-    """Normalize the device table and join its room and online-state tables."""
+    """Validate device tables before joining them with room and online state."""
 
     data = payload.get("data")
     if not isinstance(data, Mapping):
-        return ()
+        raise ValueError("Readtable response is missing its data object")
+    raw_devices = data.get("device", [])
+    if not isinstance(raw_devices, list):
+        raise ValueError("Readtable device table is not an array")
+    raw_statuses = data.get("deviceStatus", [])
+    if raw_statuses is None:
+        raw_statuses = []
+    if not isinstance(raw_statuses, list):
+        raise ValueError("Readtable device status table is not an array")
 
     raw_rooms = data.get("room", [])
     room_names: dict[str, str] = {}
@@ -255,45 +294,40 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
             if room_id and room_name:
                 room_names[room_id] = room_name
 
-    raw_statuses = data.get("deviceStatus", [])
     online_by_device: dict[str, bool | None] = {}
     values_by_device: dict[str, tuple[int | None, ...]] = {}
     properties_by_device: dict[str, Mapping[str, Any]] = {}
     statuses_by_device: dict[str, Mapping[str, Any]] = {}
-    if isinstance(raw_statuses, list):
-        for item in raw_statuses:
-            if not isinstance(item, Mapping) or item.get("delFlag") in (1, "1"):
-                continue
-            device_id = _first_text(item, ("deviceId", "deviceID"))
-            if device_id:
-                statuses_by_device[device_id] = item
-                online_by_device[device_id] = _parse_online(item.get("online"))
-                values: list[int | None] = []
-                for key in ("value1", "value2", "value3", "value4"):
-                    try:
-                        values.append(int(item[key]))
-                    except (KeyError, TypeError, ValueError):
-                        values.append(None)
-                values_by_device[device_id] = tuple(values)
-                properties = item.get("properties")
-                properties_by_device[device_id] = (
-                    dict(properties) if isinstance(properties, Mapping) else {}
-                )
-
-    raw_devices = data.get("device", [])
-    if not isinstance(raw_devices, list):
-        return ()
+    for item in raw_statuses:
+        if not isinstance(item, Mapping):
+            raise ValueError("Readtable status row is not an object")
+        if item.get("delFlag") in (1, "1"):
+            continue
+        device_id = _readtable_device_id(item, ("deviceId", "deviceID"))
+        statuses_by_device[device_id] = item
+        online_by_device[device_id] = _parse_online(item.get("online"))
+        values: list[int | None] = []
+        for key in ("value1", "value2", "value3", "value4"):
+            try:
+                values.append(int(item[key]))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                values.append(None)
+        values_by_device[device_id] = tuple(values)
+        properties = item.get("properties")
+        properties_by_device[device_id] = (
+            dict(properties) if isinstance(properties, Mapping) else {}
+        )
 
     devices: dict[str, OrviboDevice] = {}
     for item in raw_devices:
-        if not isinstance(item, Mapping) or item.get("delFlag") in (1, "1"):
+        if not isinstance(item, Mapping):
+            raise ValueError("Readtable device row is not an object")
+        if item.get("delFlag") in (1, "1"):
             continue
-        device_id = _first_text(
+        device_id = _readtable_device_id(
             item,
             ("deviceId", "deviceID", "deviceUid", "deviceUUID", "uid"),
         )
-        if not device_id:
-            continue
         room_id = _first_text(item, ("roomId", "roomID"))
         online = online_by_device.get(device_id)
         if device_id not in online_by_device:
@@ -342,6 +376,9 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
             value3=values[2],
             value4=values[3],
             properties=properties_by_device.get(device_id, {}),
+            status_update_time=protocol_update_time(
+                statuses_by_device.get(device_id, {}).get("updateTimeSec")
+            ),
         )
 
     # Some property-based devices, including door locks, only appear in the
@@ -391,8 +428,11 @@ def parse_readtable_devices(payload: Mapping[str, Any]) -> tuple[OrviboDevice, .
             value3=values[2],
             value4=values[3],
             properties=properties,
+            status_update_time=protocol_update_time(item.get("updateTimeSec")),
         )
 
+    if "device" not in data and not devices:
+        raise ValueError("Readtable response is missing its device table")
     return tuple(sorted(devices.values(), key=lambda device: device.uid))
 
 

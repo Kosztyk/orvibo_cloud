@@ -51,6 +51,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    capture_raw_events = bool(entry.options.get(CONF_RAW_EVENT_CAPTURE, False))
+    has_door_sensor = any(
+        device_is_selected(entry.options, device.uid) and "door_status" in device.properties
+        for device in coordinator.data.devices
+    )
+    if coordinator.binary_server_trust == "invalid_pin" or (
+        not capture_raw_events and not has_door_sensor
+    ):
+        return True
     binary_user_name = coordinator.data.binary_user_name
     binary_password = coordinator.data.binary_password
     if not binary_user_name or not binary_password:
@@ -65,8 +74,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         binary_user_name,
         binary_password,
         entry.data[CONF_FAMILY_ID],
-        capture_raw_events=entry.options.get(CONF_RAW_EVENT_CAPTURE, False),
-        )
+        capture_raw_events=capture_raw_events,
+        door_status_signal=coordinator.door_status_signal if has_door_sensor else None,
+        on_reconnect=coordinator.async_resync_doors if has_door_sensor else None,
+    )
     coordinator.raw_event_capture.start()
     return True
 

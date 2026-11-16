@@ -1,15 +1,19 @@
-# BAXI Anori JSG35 — v1.4.1 swing validation
+# BAXI Anori JSG35 validation
 
-This release exposes **Off, Vertical, Horizontal, Both** swing on HomeMate virtual AC profile `7404` using a Magic Cube (`30`). The existing BAXI Electra/AUX-style encoder builds a 13-byte state, 212 pulse durations and a 38 kHz carrier. The four swing modes produce distinct output vectors in the offline tests.
+ORVIBO Cloud v1.4.2 exposes Heat and Cool at **16–32 °C**, three fan speeds and four swing modes on HomeMate virtual AC profile `7404` with a Magic Cube (`30`). The 13-byte Electra/AUX-style encoder produces 212 pulse durations and a 38 kHz carrier.
 
-Carlos (@matexdj) previously reported that Horizontal moved only horizontal louvers with his experimental fork. His v1.4.0b1 physical test confirmed Off, Vertical and Both, but Horizontal was excluded from that beta's UI. **A retest of Horizontal in the exact v1.4.1 release is still recommended**; distinct output vectors alone cannot prove physical actuation.
+Carlos (@matexdj) confirmed that Horizontal moved only the horizontal louvers using the `1.4.1b9` build on Home Assistant OS 18.4 and Core 2026.11.1. He previously confirmed Off, Vertical and Both, Heat/Cool at 19–23 °C, the three fan speeds, Turbo, Silence, iFeel and Display on `1.4.0b1`. iFeel and Display send IR commands. [Contributor test reports](https://github.com/Kosztyk/orvibo_cloud/pull/5)
 
-## Suggested supervised test
+## Temperature coverage
 
-1. Select the correct BAXI virtual AC and its matching Magic Cube in HomeMate. Confirm the model and that the cloud-reported hub is online.
-2. Turn on the AC using the normal climate entity at a safe target temperature.
-3. Select each swing mode in turn, observing actual louver movement: Off, Vertical, Horizontal, Both.
-4. Confirm Horizontal moves only the horizontal louvers and that returning to Off stops movement. Capture model/firmware details if behavior differs.
-5. Avoid remote command floods, arbitrary cloud order probes or background IR polling.
+The original remote displays 16–32 °C in both Heat and Cool. Offline tests cover all 408 combinations of 17 whole-degree setpoints, two modes, three fan speeds and four swing modes. Physical testing of integration commands outside 19–23 °C is pending.
 
-The contributor also confirmed Heat, Cool, Off, three fan speeds, Turbo, Silence, iFeel and Display in v1.4.0b1. Do not interpret the iFeel command as an actual HA temperature sensor. Full provenance and licensing references are available in `THIRD_PARTY_NOTICES.md` and `PROVENANCE_AUDIT.md`.
+## Physical checks
+
+1. Confirm that the virtual AC uses profile `7404` and that its Magic Cube is online in HomeMate.
+2. Use the Home Assistant climate entity to select Heat or Cool and a test setpoint. Compare the resulting mode and displayed setpoint with the requested values.
+3. Check the newly exposed values on the physical unit, with particular attention to 16, 31 and 32 °C in both modes.
+4. Verify Off, Vertical, Horizontal and Both visually. Horizontal should move only the horizontal louvers.
+5. Record the Home Assistant version, integration version, hub type, requested mode and setpoint, displayed setpoint, fan/swing response and any error.
+
+[Release validation](VALIDATION.md) · [Protocol provenance](THIRD_PARTY_NOTICES.md)

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from itertools import islice
 import math
+
 from homeassistant.exceptions import HomeAssistantError
 
 from .binary import OrviboBinaryError, control_device
 from .const import CONF_FAMILY_ID, CONF_HOST
 from .control import is_allone_tv, lg_tv_button_command, tv_button_command
 from .entity import OrviboCloudDeviceEntity
+
+_MAX_TV_COMMANDS_PER_CALL = 40
 
 
 class OrviboTVEntity(OrviboCloudDeviceEntity):
@@ -43,18 +47,24 @@ class OrviboTVEntity(OrviboCloudDeviceEntity):
         """Validate the complete sequence, then send it once per requested key."""
 
         try:
-            names = [commands] if isinstance(commands, str) else list(commands)
+            if type(num_repeats) is not int or not 1 <= num_repeats <= 20:
+                raise ValueError("num_repeats must be an integer between 1 and 20")
+            max_keys = _MAX_TV_COMMANDS_PER_CALL // num_repeats
+            names = (
+                [commands] if isinstance(commands, str)
+                else list(islice(commands, max_keys + 1))
+            )
             if not names:
                 raise ValueError("At least one TV command is required")
+            if len(names) > max_keys:
+                raise ValueError(
+                    f"A TV request allows up to {_MAX_TV_COMMANDS_PER_CALL} commands including repeats"
+                )
             profile = self.coordinator.entry.options.get("tv_profile", "lg")
             if profile not in {"lg", "stored"}:
                 raise ValueError("Select a supported TV infrared profile in Configure")
             build = lg_tv_button_command if profile == "lg" else tv_button_command
             payloads = [build(name) for name in names]
-            if isinstance(num_repeats, bool) or not isinstance(num_repeats, int):
-                raise ValueError("num_repeats must be an integer")
-            if not 1 <= num_repeats <= 20:
-                raise ValueError("num_repeats must be between 1 and 20")
             delay = float(delay_secs)
             if not math.isfinite(delay) or not 0 <= delay <= 60:
                 raise ValueError("delay_secs must be between 0 and 60")
@@ -63,11 +73,11 @@ class OrviboTVEntity(OrviboCloudDeviceEntity):
         except (TypeError, ValueError) as err:
             raise HomeAssistantError(str(err)) from err
 
-        async with self.coordinator.tv_control_lock:
-            total = len(payloads) * num_repeats
-            sent = 0
-            for _ in range(num_repeats):
-                for command in payloads:
+        sequence = payloads * num_repeats
+        # Keep TV batches in order and let other IR controls run between keys.
+        async with self.coordinator.tv_sequence_lock:
+            for index, command in enumerate(sequence, start=1):
+                async with self.coordinator.tv_control_lock:
                     # Resolve identifiers after acquiring the lock, including
                     # after a coordinator refresh or a queued key sequence.
                     device = self._device
@@ -93,6 +103,5 @@ class OrviboTVEntity(OrviboCloudDeviceEntity):
                         )
                     except (OrviboBinaryError, OSError, TimeoutError) as err:
                         raise HomeAssistantError(str(err)) from err
-                    sent += 1
-                    if sent < total and delay:
-                        await asyncio.sleep(delay)
+                if index < len(sequence) and delay:
+                    await asyncio.sleep(delay)
