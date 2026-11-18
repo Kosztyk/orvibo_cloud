@@ -51,6 +51,9 @@ def build(root: Path, output: Path, version: str) -> tuple[Path, Path]:
         raise ValueError("Root and integration README differ")
     if not (root / f"RELEASE_NOTES_{version}.md").is_file():
         raise ValueError("Release notes missing")
+    for source in packaged_files(root):
+        if source.name in {"orvibo_client_cert.pem", "orvibo_client_key.pem"}:
+            raise ValueError("Withdrawn vendor TLS client credentials cannot be packaged")
     install = output / f"orvibo_cloud_v{version}_ha_install.zip"
     source = output / f"orvibo_cloud_v{version}_full_source.zip"
     make_zip(install, root / "custom_components", "custom_components/")

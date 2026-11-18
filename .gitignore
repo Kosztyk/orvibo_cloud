@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# Withdrawn vendor TLS client credentials
+orvibo_client_cert.pem
+orvibo_client_key.pem

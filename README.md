@@ -1,3 +1,7 @@
+> **Distribution withdrawal — 19 November 2026**
+>
+> Vendor TLS client credentials have been removed from this source. Affected releases and historical copies are being withdrawn following ORVIBO's reported refusal to authorize redistribution of those credentials. The current binary cloud transport requires the removed credentials, so clean installations cannot use that transport. The climate encoders, device profiles and test records remain available for continued development. Cleanup coordination is tracked in [issue #6](https://github.com/Kosztyk/orvibo_cloud/issues/6).
+
 <img width="512" height="512" alt="ORVIBO Cloud" src="https://github.com/user-attachments/assets/10a03183-279c-44c6-9bff-c0eaab6959f2" />
 
 # ORVIBO Cloud for Home Assistant
