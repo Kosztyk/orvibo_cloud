@@ -1,6 +1,6 @@
 """Static HACS reviewer regression checks for the release archive."""
 from pathlib import Path
-import hashlib,json,ssl,unittest
+import json,unittest
 R=Path(__file__).resolve().parents[1]
 C=R/'custom_components/orvibo_cloud'
 class HACSReviewTests(unittest.TestCase):
@@ -11,10 +11,9 @@ class HACSReviewTests(unittest.TestCase):
   self.assertIn('context.load_verify_locations',s)
   self.assertIn('VERIFY_X509_STRICT',s)
   self.assertNotIn('ssl.CERT_NONE',s)
- def test_pinned_ca(self):
-  pem=(C/'orvibo_server_ca.pem').read_text()
-  expected='f0046d72573a8e20cad178194385259f7338be2c9f9d12ac8646d1a24160ce2a'
-  self.assertEqual(hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest(), expected)
+ def test_no_bundled_vendor_client_credentials(self):
+  for name in ('orvibo_client_cert.pem','orvibo_client_key.pem'):
+   self.assertFalse(list(C.rglob(name)), f'Withdrawn client credential found: {name}')
  def test_areas_preserved(self):
   self.assertIn('if newly_registered and device.uid in device_areas:',(C/'__init__.py').read_text())
   self.assertIn('previous_areas = configured_device_areas',(C/'config_flow.py').read_text())

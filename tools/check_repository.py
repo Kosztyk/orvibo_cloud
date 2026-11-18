@@ -27,10 +27,14 @@ def inspect_repository(root: Path = ROOT) -> list[str]:
     for rel in ("README.md", "LICENSE", ".github/workflows/validate.yml",
                 "custom_components/orvibo_cloud/__init__.py",
                 "custom_components/orvibo_cloud/brand/icon.png",
-                "custom_components/orvibo_cloud/orvibo_server_ca.pem",
                 "custom_components/orvibo_cloud/translations/en.json",
                 "HACS_PUBLISHING.md", "VALIDATION.md"):
         must_exist(rel)
+
+    for name in ("orvibo_client_cert.pem", "orvibo_client_key.pem"):
+        for path in root.rglob(name):
+            if path.is_file():
+                errors.append(f"Withdrawn client credential must not be distributed: {path.relative_to(root)}")
 
     if manifest_path.is_file():
         try:
