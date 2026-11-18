@@ -89,6 +89,20 @@ class TLSConnectionTests(unittest.TestCase):
                 "-CA", f"{name}.pem", "-CAkey", f"{name}.key", "-CAcreateserial",
                 "-extfile", "server.ext", "-out", f"{name}-server.pem",
             )
+        openssl(
+            "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=ORVIBO test client",
+            "-keyout", "client.key", "-out", "client.csr",
+        )
+        (cls.root / "client.ext").write_text(
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=clientAuth\n"
+        )
+        openssl(
+            "x509", "-req", "-in", "client.csr", "-days", "2",
+            "-CA", "trusted.pem", "-CAkey", "trusted.key", "-CAcreateserial",
+            "-extfile", "client.ext", "-out", "client.pem",
+        )
         cls.ca = cls.root / "trusted.pem"
         cls.fingerprint = hashlib.sha256(
             ssl.PEM_cert_to_DER_cert(cls.ca.read_text())
@@ -98,17 +112,28 @@ class TLSConnectionTests(unittest.TestCase):
             leaf.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
         ).hexdigest()
 
+    def setUp(self):
+        for name, path in (
+            ("_CERT_PATH", self.root / "client.pem"),
+            ("_KEY_PATH", self.root / "client.key"),
+        ):
+            patcher = patch.object(binary, name, path)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     @contextmanager
     def server(self, name, *, expect_rejection=False):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         if name == "bundled":
-            context.load_cert_chain(binary._CERT_PATH, binary._KEY_PATH)
+            context.load_cert_chain(
+                self.root / "trusted-server.pem", self.root / "trusted-server.key"
+            )
         else:
             context.load_cert_chain(
                 self.root / f"{name}-server.pem", self.root / f"{name}-server.key"
             )
         if name == "trusted":
-            context.load_verify_locations(cafile=str(binary._PINNED_SERVER_CA))
+            context.load_verify_locations(cafile=str(self.ca))
             context.verify_mode = ssl.CERT_REQUIRED
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
@@ -209,9 +234,13 @@ class TLSConnectionTests(unittest.TestCase):
             with self.subTest(operation=operation), self.server(
                 "bundled", expect_rejection=True
             ) as address:
-                client = binary.OrviboBinaryClient("homemate.orvibo.com", "test", "test", "test")
+                client = binary.OrviboBinaryClient("localhost", "test", "test", "test")
                 with (
                     socket.create_connection(address, timeout=5) as raw,
+                    patch.object(binary, "ORVIBO_HOSTS", ("localhost",)),
+                    patch.object(binary, "_PINNED_SERVER_CA", self.ca),
+                    patch.object(binary, "_PINNED_SERVER_CA_SHA256", self.fingerprint),
+                    patch.object(binary, "_SHARED_CLIENT_SPKI_SHA256", self.pin),
                     patch.object(binary, "_SERVER_CA_DIRECTORY", self.root / "absent"),
                     patch.object(binary.socket, "create_connection", return_value=raw),
                     patch.object(client, "_handshake") as handshake,
@@ -255,10 +284,16 @@ class PinConfigurationTests(unittest.TestCase):
         self.assertEqual(binary.load_binary_server_pins(self.host), {"a" * 64, "b" * 64})
         self.assertEqual(binary.load_binary_server_pins("usa.orvibo.com"), set())
 
-    def test_denylisted_spki_matches_the_shipped_client_certificate(self):
-        client = x509.load_pem_x509_certificate(binary._CERT_PATH.read_bytes())
-        encoded = client.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-        self.assertEqual(hashlib.sha256(encoded).hexdigest(), binary._SHARED_CLIENT_SPKI_SHA256)
+    def test_missing_client_credentials_fail_before_opening_a_socket(self):
+        self.assertFalse((COMPONENT / "orvibo_client_cert.pem").exists())
+        self.assertFalse((COMPONENT / "orvibo_client_key.pem").exists())
+        client = binary.OrviboBinaryClient(self.host, "test", "test", "test")
+        with (
+            patch.object(binary.socket, "create_connection") as connection,
+            self.assertRaisesRegex(binary.OrviboBinaryError, "certificate files are missing"),
+        ):
+            client._connect()
+        connection.assert_not_called()
 
     def test_invalid_or_shared_key_pin_is_rejected(self):
         for value in ("not-a-digest", binary._SHARED_CLIENT_SPKI_SHA256):
